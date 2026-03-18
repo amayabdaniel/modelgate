@@ -1,0 +1,144 @@
+package proxy
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"github.com/amayabdaniel/modelgate/api/v1alpha1"
+	"github.com/amayabdaniel/modelgate/pkg/security"
+)
+
+// Middleware intercepts OpenAI-compatible LLM API requests and applies
+// security checks, rate limiting, and audit logging before forwarding.
+type Middleware struct {
+	checker *security.PromptChecker
+	policy  v1alpha1.InferencePolicySpec
+	next    http.Handler
+	auditFn func(AuditEvent)
+}
+
+// AuditEvent records a request passing through the middleware.
+type AuditEvent struct {
+	Model      string            `json:"model"`
+	Tenant     string            `json:"tenant"`
+	Action     string            `json:"action"` // "allowed", "blocked"
+	Reason     string            `json:"reason,omitempty"`
+	Violations []security.Violation `json:"violations,omitempty"`
+}
+
+// OpenAIChatRequest is a minimal representation of an OpenAI chat completion request.
+type OpenAIChatRequest struct {
+	Model    string `json:"model"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+}
+
+// NewMiddleware creates a security middleware from a policy spec.
+func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, auditFn func(AuditEvent)) (*Middleware, error) {
+	checker, err := security.NewPromptChecker(policy.Security)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Middleware{
+		checker: checker,
+		policy:  policy,
+		next:    next,
+		auditFn: auditFn,
+	}, nil
+}
+
+func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only check POST requests to chat/completions endpoints
+	if r.Method != http.MethodPost {
+		m.next.ServeHTTP(w, r)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var req OpenAIChatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		// Not a valid chat request — pass through
+		m.next.ServeHTTP(w, r)
+		return
+	}
+
+	// Extract all user message content for checking
+	var prompt string
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			prompt += msg.Content + "\n"
+		}
+	}
+
+	tenant := r.Header.Get("X-Tenant")
+
+	// Check prompt security
+	violations := m.checker.Check(prompt)
+	if len(violations) > 0 {
+		if m.auditFn != nil {
+			m.auditFn(AuditEvent{
+				Model:      req.Model,
+				Tenant:     tenant,
+				Action:     "blocked",
+				Reason:     violations[0].Message,
+				Violations: violations,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "Request blocked by inference security policy",
+				"type":    "policy_violation",
+				"code":    violations[0].Rule,
+			},
+		})
+		return
+	}
+
+	// Check PII in prompt if redaction is enabled
+	if m.policy.Security.PIIRedaction && security.ContainsPII(prompt) {
+		if m.auditFn != nil {
+			m.auditFn(AuditEvent{
+				Model:  req.Model,
+				Tenant: tenant,
+				Action: "blocked",
+				Reason: "PII detected in prompt",
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "Request contains personally identifiable information",
+				"type":    "pii_detected",
+				"code":    "pii_redaction",
+			},
+		})
+		return
+	}
+
+	// All checks passed — audit and forward
+	if m.auditFn != nil {
+		m.auditFn(AuditEvent{
+			Model:  req.Model,
+			Tenant: tenant,
+			Action: "allowed",
+		})
+	}
+
+	m.next.ServeHTTP(w, r)
+}
