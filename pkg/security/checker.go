@@ -65,7 +65,11 @@ func NewPromptChecker(policy v1alpha1.SecurityPolicy) (*PromptChecker, error) {
 }
 
 // Check evaluates a prompt against all security rules and returns violations.
+// Input is normalized before checking to defeat encoding bypass attacks.
 func (pc *PromptChecker) Check(prompt string) []Violation {
+	// Normalize input to defeat zero-width, encoding, and whitespace bypass attacks
+	prompt = NormalizeInput(prompt)
+
 	var violations []Violation
 
 	// Check blocked patterns

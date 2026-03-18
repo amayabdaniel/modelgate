@@ -53,11 +53,20 @@ func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, audit
 }
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Set security headers on all responses
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Request-Id", r.Header.Get("X-Request-Id"))
+
 	// Only check POST requests to chat/completions endpoints
 	if r.Method != http.MethodPost {
 		m.next.ServeHTTP(w, r)
 		return
 	}
+
+	// Enforce max request body size (10MB)
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
