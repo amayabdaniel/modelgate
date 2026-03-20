@@ -1,0 +1,91 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+
+	"github.com/amayabdaniel/modelgate/api/v1alpha1"
+	"github.com/amayabdaniel/modelgate/pkg/proxy"
+	"gopkg.in/yaml.v3"
+)
+
+func main() {
+	addr := flag.String("listen", ":8080", "address to listen on")
+	policyFile := flag.String("policy", "policy.yaml", "path to inference policy file")
+	backendURL := flag.String("backend", "", "backend LLM API URL (e.g., http://localhost:8000)")
+	flag.Parse()
+
+	if *backendURL == "" {
+		log.Fatal("modelgate: --backend is required (e.g., --backend=http://vllm:8000)")
+	}
+
+	// Load policy
+	policy, err := loadPolicy(*policyFile)
+	if err != nil {
+		log.Fatalf("modelgate: loading policy: %v", err)
+	}
+	log.Printf("modelgate: loaded policy from %s", *policyFile)
+	log.Printf("modelgate: %d budget rules, %d rate limits, injection protection=%t, pii redaction=%t",
+		len(policy.Budgets), len(policy.RateLimits),
+		policy.Security.PromptInjectionProtection, policy.Security.PIIRedaction)
+
+	// Set up reverse proxy to backend
+	target, err := url.Parse(*backendURL)
+	if err != nil {
+		log.Fatalf("modelgate: invalid backend URL: %v", err)
+	}
+	reverseProxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Audit logging
+	auditFn := func(event proxy.AuditEvent) {
+		data, _ := json.Marshal(event)
+		log.Printf("modelgate: audit: %s", string(data))
+	}
+
+	// Create security middleware
+	mw, err := proxy.NewMiddleware(*policy, reverseProxy, auditFn)
+	if err != nil {
+		log.Fatalf("modelgate: creating middleware: %v", err)
+	}
+
+	// Health endpoints
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "ok")
+	})
+	// All other traffic goes through security middleware → backend
+	mux.Handle("/", mw)
+
+	log.Printf("modelgate: proxying to %s", *backendURL)
+	log.Printf("modelgate: listening on %s", *addr)
+	log.Fatal(http.ListenAndServe(*addr, mux))
+}
+
+func loadPolicy(path string) (*v1alpha1.InferencePolicySpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var policy v1alpha1.InferencePolicySpec
+	if err := yaml.Unmarshal(data, &policy); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	if err := policy.Validate(); err != nil {
+		return nil, fmt.Errorf("validating %s: %w", path, err)
+	}
+
+	return &policy, nil
+}

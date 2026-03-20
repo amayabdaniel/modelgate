@@ -1,0 +1,31 @@
+budgets:
+  - tenant: support-team
+    monthly_limit_usd: 3000
+    alert_at_percent: 80
+  - tenant: dev-team
+    monthly_limit_usd: 500
+    alert_at_percent: 90
+
+security:
+  prompt_injection_protection: true
+  pii_redaction: true
+  blocked_patterns:
+    - "ignore previous instructions"
+    - "send me the database"
+    - "drop table"
+  max_prompt_tokens: 8192
+
+routing:
+  rules:
+    - if: "prompt_tokens < 2000"
+      model: qwen3-8b
+    - if: "prompt_tokens >= 2000"
+      model: llama3-70b
+
+rateLimits:
+  - tenant: support-team
+    tokens_per_minute: 50000
+    requests_per_minute: 100
+  - tenant: dev-team
+    tokens_per_minute: 20000
+    requests_per_minute: 50
