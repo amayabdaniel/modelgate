@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/amayabdaniel/modelgate/api/v1alpha1"
 	"github.com/amayabdaniel/modelgate/pkg/security"
@@ -13,6 +14,7 @@ import (
 // Middleware intercepts OpenAI-compatible LLM API requests and applies
 // security checks, rate limiting, and audit logging before forwarding.
 type Middleware struct {
+	mu          sync.RWMutex
 	checker     *security.PromptChecker
 	policy      v1alpha1.InferencePolicySpec
 	next        http.Handler
@@ -104,6 +106,12 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tenant := r.Header.Get("X-Tenant")
 
+	// Acquire read lock for thread-safe checker access (supports hot-reload)
+	m.mu.RLock()
+	checker := m.checker
+	policy := m.policy
+	m.mu.RUnlock()
+
 	// Check rate limits (token-aware, per tenant)
 	if m.rateLimiter != nil && tenant != "" {
 		estimatedTokens := len(prompt) / 4 // rough estimate: 1 token ≈ 4 chars
@@ -132,7 +140,7 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check prompt security
-	violations := m.checker.Check(prompt)
+	violations := checker.Check(prompt)
 	if len(violations) > 0 {
 		if m.auditFn != nil {
 			m.auditFn(AuditEvent{
@@ -157,7 +165,7 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check PII in prompt if redaction is enabled
-	if m.policy.Security.PIIRedaction && security.ContainsPII(prompt) {
+	if policy.Security.PIIRedaction && security.ContainsPII(prompt) {
 		if m.auditFn != nil {
 			m.auditFn(AuditEvent{
 				Model:  req.Model,

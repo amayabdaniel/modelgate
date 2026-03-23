@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/amayabdaniel/modelgate/api/v1alpha1"
 	"github.com/amayabdaniel/modelgate/pkg/proxy"
@@ -72,6 +73,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("modelgate: creating middleware: %v", err)
 	}
+
+	// Start policy hot-reloader (watches file every 5 seconds)
+	reloader := proxy.NewPolicyReloader(*policyFile, mw, 5*time.Second)
+	reloader.Start()
+	log.Println("modelgate: policy hot-reload enabled")
 
 	// Health + stats endpoints
 	mux := http.NewServeMux()
