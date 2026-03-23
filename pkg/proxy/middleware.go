@@ -13,10 +13,11 @@ import (
 // Middleware intercepts OpenAI-compatible LLM API requests and applies
 // security checks, rate limiting, and audit logging before forwarding.
 type Middleware struct {
-	checker *security.PromptChecker
-	policy  v1alpha1.InferencePolicySpec
-	next    http.Handler
-	auditFn func(AuditEvent)
+	checker     *security.PromptChecker
+	policy      v1alpha1.InferencePolicySpec
+	next        http.Handler
+	auditFn     func(AuditEvent)
+	rateLimiter *security.TokenBucket
 }
 
 // AuditEvent records a request passing through the middleware.
@@ -44,11 +45,22 @@ func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, audit
 		return nil, err
 	}
 
+	// Build rate limiter from policy if rate limits are defined
+	var rateLimiter *security.TokenBucket
+	if len(policy.RateLimits) > 0 {
+		// Use the first rate limit's tokens_per_minute as default capacity
+		rateLimiter = security.NewTokenBucket(
+			policy.RateLimits[0].TokensPerMinute,
+			policy.RateLimits[0].TokensPerMinute*2, // burst = 2x rate
+		)
+	}
+
 	return &Middleware{
-		checker: checker,
-		policy:  policy,
-		next:    next,
-		auditFn: auditFn,
+		checker:     checker,
+		policy:      policy,
+		next:        next,
+		auditFn:     auditFn,
+		rateLimiter: rateLimiter,
 	}, nil
 }
 
@@ -91,6 +103,33 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tenant := r.Header.Get("X-Tenant")
+
+	// Check rate limits (token-aware, per tenant)
+	if m.rateLimiter != nil && tenant != "" {
+		estimatedTokens := len(prompt) / 4 // rough estimate: 1 token ≈ 4 chars
+		if !m.rateLimiter.Allow(tenant, estimatedTokens) {
+			if m.auditFn != nil {
+				m.auditFn(AuditEvent{
+					Model:  req.Model,
+					Tenant: tenant,
+					Action: "blocked",
+					Reason: "Rate limit exceeded",
+				})
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "Token rate limit exceeded for tenant",
+					"type":    "rate_limited",
+					"code":    "tokens_per_minute",
+				},
+			})
+			return
+		}
+	}
 
 	// Check prompt security
 	violations := m.checker.Check(prompt)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/amayabdaniel/modelgate/api/v1alpha1"
@@ -205,6 +206,70 @@ func TestMiddleware_InvalidJSON(t *testing.T) {
 	// Invalid JSON should pass through (might be a different endpoint format)
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected 200 for invalid JSON passthrough, got %d", rr.Code)
+	}
+}
+
+func TestMiddleware_RateLimiting(t *testing.T) {
+	policy := v1alpha1.InferencePolicySpec{
+		RateLimits: []v1alpha1.RateLimit{
+			{Tenant: "test-team", TokensPerMinute: 100, RequestsPerMinute: 10},
+		},
+	}
+
+	var events []AuditEvent
+	mw := newTestMiddleware(t, policy, func(e AuditEvent) {
+		events = append(events, e)
+	})
+
+	// First request — should pass (100 tokens capacity, ~3 tokens estimated for "Hi")
+	rr := httptest.NewRecorder()
+	req := chatRequest(t, "qwen3", "Hi")
+	req.Header.Set("X-Tenant", "test-team")
+	mw.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected first request allowed, got %d", rr.Code)
+	}
+
+	// Exhaust the bucket with a large prompt
+	longPrompt := strings.Repeat("word ", 200) // ~200 tokens estimated
+	rr = httptest.NewRecorder()
+	req = chatRequest(t, "qwen3", longPrompt)
+	req.Header.Set("X-Tenant", "test-team")
+	mw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 after exhausting rate limit, got %d", rr.Code)
+	}
+
+	// Check audit event
+	found := false
+	for _, e := range events {
+		if e.Action == "blocked" && e.Reason == "Rate limit exceeded" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected rate_limited audit event")
+	}
+}
+
+func TestMiddleware_RateLimitRetryAfterHeader(t *testing.T) {
+	policy := v1alpha1.InferencePolicySpec{
+		RateLimits: []v1alpha1.RateLimit{
+			{Tenant: "tiny", TokensPerMinute: 1},
+		},
+	}
+
+	mw := newTestMiddleware(t, policy, nil)
+
+	// Send request that exceeds 1 token limit
+	rr := httptest.NewRecorder()
+	req := chatRequest(t, "qwen3", "This will exceed the tiny limit")
+	req.Header.Set("X-Tenant", "tiny")
+	mw.ServeHTTP(rr, req)
+
+	if rr.Header().Get("Retry-After") != "60" {
+		t.Errorf("expected Retry-After: 60 header, got %q", rr.Header().Get("Retry-After"))
 	}
 }
 
