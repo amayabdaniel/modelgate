@@ -42,10 +42,29 @@ func main() {
 	}
 	reverseProxy := httputil.NewSingleHostReverseProxy(target)
 
-	// Audit logging
+	// Stats tracking
+	stats := proxy.NewStats()
+
+	// Audit logging with stats integration
 	auditFn := func(event proxy.AuditEvent) {
 		data, _ := json.Marshal(event)
 		log.Printf("modelgate: audit: %s", string(data))
+
+		switch event.Action {
+		case "allowed":
+			stats.RecordAllowed(event.Tenant)
+		case "blocked":
+			rule := "unknown"
+			if len(event.Violations) > 0 {
+				rule = event.Violations[0].Rule
+			} else if event.Reason == "PII detected in prompt" {
+				rule = "pii_redaction"
+			} else if event.Reason == "Rate limit exceeded" {
+				stats.RecordRateLimited(event.Tenant)
+				return
+			}
+			stats.RecordBlocked(event.Tenant, rule)
+		}
 	}
 
 	// Create security middleware
@@ -54,8 +73,9 @@ func main() {
 		log.Fatalf("modelgate: creating middleware: %v", err)
 	}
 
-	// Health endpoints
+	// Health + stats endpoints
 	mux := http.NewServeMux()
+	mux.Handle("/stats", stats.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
