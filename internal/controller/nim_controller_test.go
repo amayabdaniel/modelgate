@@ -65,11 +65,13 @@ func newSvc(spec v1alpha1.NIMServiceSpec) *v1alpha1.NIMService {
 	}
 }
 
+func int32Ptr(v int32) *int32 { return &v }
+
 func TestReconcile_MaterializesDeploymentAndStatus(t *testing.T) {
 	fc := &fakeClient{
 		svc: newSvc(v1alpha1.NIMServiceSpec{
 			Image:         "nvcr.io/nim/meta/llama3-8b:1.0.0",
-			Replicas:      2,
+			Replicas:      int32Ptr(2),
 			Model:         "llama3-8b",
 			NGCSecretName: "ngc-key",
 		}),
@@ -145,7 +147,7 @@ func TestReconcile_ProgressingPhase_WhenReplicasNotReady(t *testing.T) {
 	fc := &fakeClient{
 		svc: newSvc(v1alpha1.NIMServiceSpec{
 			Image:    "nvcr.io/nim/meta/llama3-8b:1.0.0",
-			Replicas: 3,
+			Replicas: int32Ptr(3),
 		}),
 		deployment: &Deployment{ObservedReadyReplicas: 1},
 	}
@@ -159,7 +161,7 @@ func TestReconcile_ProgressingPhase_WhenReplicasNotReady(t *testing.T) {
 
 func TestReconcile_PendingPhase_WhenZeroReady(t *testing.T) {
 	fc := &fakeClient{
-		svc:        newSvc(v1alpha1.NIMServiceSpec{Image: "x", Replicas: 1}),
+		svc:        newSvc(v1alpha1.NIMServiceSpec{Image: "x", Replicas: int32Ptr(1)}),
 		deployment: &Deployment{ObservedReadyReplicas: 0},
 	}
 	if err := NewReconciler(fc).Reconcile(context.Background(), "nim", "x"); err != nil {
@@ -170,24 +172,47 @@ func TestReconcile_PendingPhase_WhenZeroReady(t *testing.T) {
 	}
 }
 
-func TestReconcile_ScaledToZero_IsReady(t *testing.T) {
+func TestReconcile_ScaledToZero_IsReadyAndPropagatesZeroToDeployment(t *testing.T) {
+	// Explicit scale-to-zero: Replicas is a non-nil pointer to 0. The
+	// reconciler must honor that (not promote to 1) and the Deployment
+	// must be applied with Replicas=0 so the cluster actually shuts the
+	// pods down.
 	fc := &fakeClient{
 		svc: &v1alpha1.NIMService{
-			Metadata: v1alpha1.ObjectMeta{Name: "idle", Namespace: "nim", Generation: 1},
-			Spec:     v1alpha1.NIMServiceSpec{Image: "x", Replicas: 0},
+			Metadata: v1alpha1.ObjectMeta{Name: "idle", Namespace: "nim", Generation: 3},
+			Spec:     v1alpha1.NIMServiceSpec{Image: "x", Replicas: int32Ptr(0)},
 		},
 		deployment: &Deployment{ObservedReadyReplicas: 0},
 	}
-	// Need to manually default because we built without ApplyDefaults-triggering
-	// defaults being set (replicas is already 0 intentionally).
-	// ApplyDefaults would promote 0→1; to test scale-to-zero we bypass via spec
-	// that Validate accepts: use -0 semantics by setting Replicas: 0 and relying
-	// on test intent. (The reconciler's ApplyDefaults flips 0→1, so we set 1 and
-	// override post-hoc to assert derivePhase specifically.)
-	if p := derivePhase(0, 0); p != "Ready" {
-		t.Errorf("derivePhase(0,0): want Ready, got %s", p)
+	if err := NewReconciler(fc).Reconcile(context.Background(), "nim", "idle"); err != nil {
+		t.Fatalf("reconcile: %v", err)
 	}
-	_ = fc // keep fakeClient reachable for future expansion
+
+	if len(fc.createOrUpdate) != 1 {
+		t.Fatalf("expected one apply call, got %d", len(fc.createOrUpdate))
+	}
+	if got := fc.createOrUpdate[0].Replicas; got != 0 {
+		t.Errorf("deployment replicas: want 0 (honor scale-to-zero), got %d", got)
+	}
+	if fc.svc.Status.Phase != "Ready" {
+		t.Errorf("phase: want Ready (intentional scale-to-zero is healthy), got %s", fc.svc.Status.Phase)
+	}
+}
+
+func TestReconcile_OmittedReplicas_DefaultsToOne(t *testing.T) {
+	// Omitted Replicas (nil pointer) should still default to 1 — the
+	// historical behavior. Companion to the scale-to-zero test so both
+	// branches of the pointer-semantics change are locked down.
+	fc := &fakeClient{
+		svc:        newSvc(v1alpha1.NIMServiceSpec{Image: "x"}), // Replicas nil
+		deployment: &Deployment{ObservedReadyReplicas: 1},
+	}
+	if err := NewReconciler(fc).Reconcile(context.Background(), "nim", "x"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := fc.createOrUpdate[0].Replicas; got != 1 {
+		t.Errorf("omitted replicas should default to 1, got %d", got)
+	}
 }
 
 func TestReconcile_InvalidSpec_ErrorAndDegraded(t *testing.T) {
@@ -229,7 +254,7 @@ func TestReconcile_DeletedNIMService_NoOp(t *testing.T) {
 func TestBuildDeployment_LabelsAndEnv(t *testing.T) {
 	svc := newSvc(v1alpha1.NIMServiceSpec{
 		Image:         "nvcr.io/nim/meta/llama3-8b:1.0.0",
-		Replicas:      2,
+		Replicas:      int32Ptr(2),
 		Model:         "llama3-8b",
 		NGCSecretName: "my-key",
 		GPURequest:    4,

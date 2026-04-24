@@ -34,8 +34,12 @@ type NIMServiceSpec struct {
 	// Image is the NIM container image (e.g. nvcr.io/nim/meta/llama3-8b:1.0.0).
 	Image string `json:"image"`
 
-	// Replicas is the desired replica count. Defaults to 1 when unset.
-	Replicas int32 `json:"replicas,omitempty"`
+	// Replicas is the desired replica count. Pointer semantics so callers
+	// can explicitly scale to zero — a value-type int32 cannot distinguish
+	// "field omitted" from "explicit 0" and the defaulting logic would
+	// then silently re-promote an intentional scale-down back to 1.
+	// Defaults to 1 when nil.
+	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Model is the model name served by this NIM. Informational — surfaced
 	// in status + labels so operators can filter by model.
@@ -85,8 +89,8 @@ func (s *NIMServiceSpec) Validate() error {
 	if s.Image == "" {
 		return fmt.Errorf("spec.image is required")
 	}
-	if s.Replicas < 0 {
-		return fmt.Errorf("spec.replicas must be >= 0, got %d", s.Replicas)
+	if s.Replicas != nil && *s.Replicas < 0 {
+		return fmt.Errorf("spec.replicas must be >= 0, got %d", *s.Replicas)
 	}
 	if s.GPURequest < 0 {
 		return fmt.Errorf("spec.gpuRequest must be >= 0, got %d", s.GPURequest)
@@ -101,8 +105,9 @@ func (s *NIMServiceSpec) Validate() error {
 // Called by the reconciler before materializing the Deployment so tests
 // and real deploys see the same canonical spec.
 func (s *NIMServiceSpec) ApplyDefaults() {
-	if s.Replicas == 0 {
-		s.Replicas = 1
+	if s.Replicas == nil {
+		one := int32(1)
+		s.Replicas = &one
 	}
 	if s.GPURequest == 0 {
 		s.GPURequest = 1
@@ -110,4 +115,13 @@ func (s *NIMServiceSpec) ApplyDefaults() {
 	if s.Port == 0 {
 		s.Port = 8000
 	}
+}
+
+// DesiredReplicas returns the effective replica count after defaulting.
+// Safe to call on a zero-value spec; returns 1.
+func (s *NIMServiceSpec) DesiredReplicas() int32 {
+	if s.Replicas == nil {
+		return 1
+	}
+	return *s.Replicas
 }

@@ -102,7 +102,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, namespace, name string) erro
 
 	svc.Status.ObservedGeneration = svc.Metadata.Generation
 	svc.Status.ReadyReplicas = live.ObservedReadyReplicas
-	svc.Status.Phase = derivePhase(svc.Spec.Replicas, live.ObservedReadyReplicas)
+	svc.Status.Phase = derivePhase(svc.Spec.DesiredReplicas(), live.ObservedReadyReplicas)
 	svc.Status.Conditions = setCondition(svc.Status.Conditions, v1alpha1.Condition{
 		Type: "SpecValid", Status: "True", Reason: "Applied",
 	})
@@ -140,7 +140,7 @@ func BuildDeployment(svc *v1alpha1.NIMService) *Deployment {
 		Namespace:  svc.Metadata.Namespace,
 		Labels:     labels,
 		Image:      svc.Spec.Image,
-		Replicas:   svc.Spec.Replicas,
+		Replicas:   svc.Spec.DesiredReplicas(),
 		GPURequest: svc.Spec.GPURequest,
 		Port:       svc.Spec.Port,
 		Env:        env,
