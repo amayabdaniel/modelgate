@@ -18,6 +18,12 @@ type Stats struct {
 	BlockedRequests  atomic.Int64
 	RateLimited      atomic.Int64
 
+	// Provider identity (e.g. "generic", "nim") — reported in /stats so
+	// dashboards can tell which upstream is being proxied without having
+	// to read the process flags.
+	provider string
+	backend  string
+
 	// Per-tenant stats
 	tenantStats map[string]*TenantStats
 
@@ -35,6 +41,8 @@ type TenantStats struct {
 // StatsResponse is the JSON response from /stats.
 type StatsResponse struct {
 	Uptime           string                       `json:"uptime"`
+	Provider         string                       `json:"provider,omitempty"`
+	Backend          string                       `json:"backend,omitempty"`
 	TotalRequests    int64                        `json:"total_requests"`
 	AllowedRequests  int64                        `json:"allowed_requests"`
 	BlockedRequests  int64                        `json:"blocked_requests"`
@@ -58,6 +66,15 @@ func NewStats() *Stats {
 		tenantStats:     make(map[string]*TenantStats),
 		violationCounts: make(map[string]*atomic.Int64),
 	}
+}
+
+// SetProvider records which upstream provider is being proxied so the
+// value appears in /stats responses. Safe to call once at startup.
+func (s *Stats) SetProvider(name, backend string) {
+	s.mu.Lock()
+	s.provider = name
+	s.backend = backend
+	s.mu.Unlock()
 }
 
 // RecordAllowed records a successful request.
@@ -147,10 +164,14 @@ func (s *Stats) ToResponse() StatsResponse {
 	for rule, c := range s.violationCounts {
 		violations[rule] = c.Load()
 	}
+	provider := s.provider
+	backend := s.backend
 	s.mu.RUnlock()
 
 	return StatsResponse{
 		Uptime:          time.Since(s.StartedAt).Round(time.Second).String(),
+		Provider:        provider,
+		Backend:         backend,
 		TotalRequests:   total,
 		AllowedRequests: s.AllowedRequests.Load(),
 		BlockedRequests: blocked,
