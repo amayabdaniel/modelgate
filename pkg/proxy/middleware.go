@@ -3,11 +3,14 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 
 	"github.com/amayabdaniel/modelgate/api/v1alpha1"
+	"github.com/amayabdaniel/modelgate/pkg/guardrails"
 	"github.com/amayabdaniel/modelgate/pkg/security"
 )
 
@@ -20,6 +23,7 @@ type Middleware struct {
 	next        http.Handler
 	auditFn     func(AuditEvent)
 	rateLimiter *security.TokenBucket
+	guardrails  *guardrails.Client
 }
 
 // AuditEvent records a request passing through the middleware.
@@ -57,12 +61,20 @@ func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, audit
 		)
 	}
 
+	// Optional NeMo Guardrails client — activates when the policy names
+	// an endpoint. Nil otherwise; ServeHTTP checks Available() before use.
+	var gr *guardrails.Client
+	if policy.Security.GuardrailsEndpoint != "" {
+		gr = guardrails.NewClient(policy.Security.GuardrailsEndpoint)
+	}
+
 	return &Middleware{
 		checker:     checker,
 		policy:      policy,
 		next:        next,
 		auditFn:     auditFn,
 		rateLimiter: rateLimiter,
+		guardrails:  gr,
 	}, nil
 }
 
@@ -162,6 +174,72 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		return
+	}
+
+	// NeMo Guardrails check — runs after regex checks when configured.
+	// Colang rails produce a richer violation taxonomy (jailbreak,
+	// off-topic, hallucination, etc.). Failures default to fail-open so
+	// NeMo outages do not take down the proxy; policy can opt into
+	// fail-closed with GuardrailsFailClosed.
+	m.mu.RLock()
+	gr := m.guardrails
+	m.mu.RUnlock()
+	if gr != nil && gr.Available() {
+		ctx := r.Context()
+		grViolations, grErr := gr.Check(ctx, prompt, map[string]string{"tenant": tenant, "model": req.Model})
+		switch {
+		case grErr != nil && !errors.Is(grErr, guardrails.ErrDisabled):
+			if policy.Security.GuardrailsFailClosed {
+				if m.auditFn != nil {
+					m.auditFn(AuditEvent{
+						Model:  req.Model,
+						Tenant: tenant,
+						Action: "blocked",
+						Reason: "Guardrails unreachable (fail-closed)",
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "Policy engine unavailable",
+						"type":    "guardrails_unavailable",
+						"code":    "guardrails",
+					},
+				})
+				return
+			}
+			log.Printf("modelgate: guardrails check failed (fail-open): %v", grErr)
+
+		case len(grViolations) > 0:
+			securityVs := make([]security.Violation, 0, len(grViolations))
+			for _, v := range grViolations {
+				securityVs = append(securityVs, security.Violation{
+					Rule:     v.Rule,
+					Severity: v.Severity,
+					Message:  v.Message,
+				})
+			}
+			if m.auditFn != nil {
+				m.auditFn(AuditEvent{
+					Model:      req.Model,
+					Tenant:     tenant,
+					Action:     "blocked",
+					Reason:     securityVs[0].Message,
+					Violations: securityVs,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "Request blocked by NeMo Guardrails policy",
+					"type":    "policy_violation",
+					"code":    securityVs[0].Rule,
+				},
+			})
+			return
+		}
 	}
 
 	// Check PII in prompt if redaction is enabled

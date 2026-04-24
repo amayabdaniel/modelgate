@@ -28,6 +28,17 @@ type SecurityPolicy struct {
 	PIIRedaction              bool     `yaml:"pii_redaction,omitempty" json:"pii_redaction,omitempty"`
 	BlockedPatterns           []string `yaml:"blocked_patterns,omitempty" json:"blocked_patterns,omitempty"`
 	MaxPromptTokens           int      `yaml:"max_prompt_tokens,omitempty" json:"max_prompt_tokens,omitempty"`
+
+	// GuardrailsEndpoint, when set, points modelgate at a NeMo Guardrails
+	// server. Every prompt that passes regex checks is re-evaluated by
+	// Colang rails before being forwarded to the upstream LLM. Unset to
+	// disable; regex-based checks continue to run.
+	GuardrailsEndpoint string `yaml:"guardrails_endpoint,omitempty" json:"guardrails_endpoint,omitempty"`
+
+	// GuardrailsFailClosed, when true, blocks a request if the Guardrails
+	// endpoint is unreachable or errors. Defaults to false (fail-open) so
+	// NeMo outages do not take down the proxy.
+	GuardrailsFailClosed bool `yaml:"guardrails_fail_closed,omitempty" json:"guardrails_fail_closed,omitempty"`
 }
 
 type RoutingPolicy struct {
