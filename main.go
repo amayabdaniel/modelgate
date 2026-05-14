@@ -68,7 +68,14 @@ func main() {
 	stats := proxy.NewStats()
 	stats.SetProvider(prov.Name(), prov.Target().String())
 
-	// Audit logging with stats integration
+	// AuditBroker fans every event out to /v1/audit/stream subscribers
+	// so downstream systems (gpudab's Morpheus DFP backend) can run
+	// per-request anomaly detection on the live stream. The proxy hot
+	// path never blocks: a slow subscriber drops, not stalls.
+	auditBroker := proxy.NewAuditBroker()
+	defer auditBroker.Close()
+
+	// Audit logging with stats integration + broker fan-out.
 	auditFn := func(event proxy.AuditEvent) {
 		data, _ := json.Marshal(event)
 		log.Printf("modelgate: audit: %s", string(data))
@@ -84,10 +91,12 @@ func main() {
 				rule = "pii_redaction"
 			} else if event.Reason == "Rate limit exceeded" {
 				stats.RecordRateLimited(event.Tenant)
+				auditBroker.Publish(event)
 				return
 			}
 			stats.RecordBlocked(event.Tenant, rule)
 		}
+		auditBroker.Publish(event)
 	}
 
 	// Create security middleware
@@ -104,6 +113,9 @@ func main() {
 	// Health + stats endpoints
 	mux := http.NewServeMux()
 	mux.Handle("/stats", stats.Handler())
+	// Live audit-event stream (SSE). Consumed by gpudab's Morpheus DFP
+	// backend for per-request anomaly detection.
+	mux.Handle("/v1/audit/stream", proxy.NewAuditStreamHandler(auditBroker))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
