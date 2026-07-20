@@ -1,0 +1,29 @@
+---
+# Reference NGC key. In production, source this from an external
+# secret manager (Vault, GSM, AWS SM) and mount via CSI — do NOT commit
+# real values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ngc-api-key
+  namespace: default
+type: Opaque
+stringData:
+  # The NIM container reads NGC_API_KEY from env; the operator projects
+  # the value from this Secret's key of the same name.
+  NGC_API_KEY: "REPLACE_ME_WITH_REAL_NGC_KEY"
+---
+apiVersion: modelgate.dev/v1alpha1
+kind: NIMService
+metadata:
+  name: llama3-8b
+  namespace: default
+  labels:
+    app.kubernetes.io/instance: llama3-8b
+spec:
+  image: nvcr.io/nim/meta/llama3-8b-instruct:1.0.0
+  replicas: 2
+  model: llama3-8b-instruct
+  ngcSecretName: ngc-api-key
+  gpuRequest: 1
+  port: 8000

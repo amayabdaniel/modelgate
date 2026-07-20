@@ -1,0 +1,142 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nimservices.modelgate.dev
+spec:
+  group: modelgate.dev
+  scope: Namespaced
+  names:
+    plural: nimservices
+    singular: nimservice
+    kind: NIMService
+    shortNames:
+      - nim
+      - nims
+    categories:
+      - modelgate
+      - ai
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      # Enables `kubectl scale nim/<name> --replicas=N`; the operator
+      # honors the pointer-typed Replicas field for explicit zero.
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.readyReplicas
+      # Columns visible in `kubectl get nim`. Keep short — one glance
+      # per row for daily ops.
+      additionalPrinterColumns:
+        - name: Model
+          type: string
+          jsonPath: .spec.model
+        - name: Image
+          type: string
+          jsonPath: .spec.image
+          priority: 1
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  minLength: 1
+                  description: >-
+                    NIM container image, e.g.
+                    nvcr.io/nim/meta/llama3-8b:1.0.0
+                replicas:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  # Nullable so the operator can distinguish "field
+                  # omitted → default 1" from "explicit 0 → scale down."
+                  # Pointer-typed on the Go side; nullable on the wire.
+                  nullable: true
+                  description: >-
+                    Desired replica count. Defaults to 1 when unset.
+                    Set to 0 to intentionally scale to zero.
+                model:
+                  type: string
+                  description: >-
+                    Human-friendly model identifier surfaced in status
+                    and pod labels for filtering.
+                ngcSecretName:
+                  type: string
+                  description: >-
+                    Name of a Secret in the same namespace containing
+                    the NGC_API_KEY. Missing values yield a Deployment
+                    that will 401 on every NIM request; the operator
+                    flags this via the NGCKeyPresent condition.
+                gpuRequest:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  description: >-
+                    Number of nvidia.com/gpu resources to request per
+                    pod. Defaults to 1 when unset.
+                port:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  maximum: 65535
+                  description: >-
+                    HTTP port the NIM container listens on. Defaults
+                    to 8000. Used as the readiness-probe target.
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                readyReplicas:
+                  type: integer
+                  format: int32
+                phase:
+                  type: string
+                  # Enum discipline so kubectl-get output stays clean;
+                  # matches derivePhase() in the reconciler.
+                  enum:
+                    - Pending
+                    - Progressing
+                    - Ready
+                    - Degraded
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                      message:
+                        type: string
