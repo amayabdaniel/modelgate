@@ -1,4 +1,4 @@
-.PHONY: build test run docker-build operator-build operator-run
+.PHONY: build test run docker-build operator-build operator-run operator-image
 
 build:
 	go build -o bin/modelgate .
@@ -20,3 +20,8 @@ operator-build:
 
 operator-run:
 	go run -tags k8s ./cmd/nim-operator --health-probe-bind-address=:8081
+
+# Container image for cluster deploy. Uses Dockerfile.operator so
+# controller-runtime deps don't land in the proxy image.
+operator-image:
+	docker build -f Dockerfile.operator -t ghcr.io/amayabdaniel/nim-operator:latest .

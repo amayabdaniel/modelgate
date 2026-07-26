@@ -1,0 +1,47 @@
+# NIM operator image. Kept separate from the proxy Dockerfile so each
+# artifact carries only the deps it needs — the operator pulls in
+# controller-runtime + client-go (~40MB), which have no business in the
+# proxy container.
+#
+# Build:
+#   docker build -f Dockerfile.operator -t ghcr.io/amayabdaniel/nim-operator:latest .
+
+# --- builder ----------------------------------------------------------------
+FROM golang:1.22-alpine AS builder
+
+# Enable module downloads through the standard proxy; no cgo needed
+# because the operator has no C deps.
+ENV GO111MODULE=on \
+    CGO_ENABLED=0 \
+    GOOS=linux
+
+WORKDIR /src
+
+# Cache module downloads by copying only go.mod/go.sum first.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Now the full source. Anything not needed by the operator build is
+# dropped by the compiler; controller-runtime + apimachinery come in
+# behind the `k8s` build tag.
+COPY . .
+
+RUN go build \
+      -tags k8s \
+      -ldflags="-s -w -X main.version=$(cat VERSION 2>/dev/null || echo dev)" \
+      -o /out/nim-operator \
+      ./cmd/nim-operator
+
+# --- runtime ----------------------------------------------------------------
+# Distroless static-nonroot — no shell, no package manager, non-root
+# by default (UID 65532). Smallest reasonable attack surface for a
+# controller that only makes HTTP calls to the API server.
+FROM gcr.io/distroless/static:nonroot
+
+COPY --from=builder /out/nim-operator /nim-operator
+
+# Metrics endpoint (Prometheus) and health probe endpoint.
+EXPOSE 8080 8081
+
+USER 65532:65532
+ENTRYPOINT ["/nim-operator"]

@@ -1,0 +1,141 @@
+---
+# NIM operator deployment. Assumes the CRD from deploy/crd/nimservice.yaml
+# is already installed:
+#   kubectl apply -f deploy/crd/nimservice.yaml
+#
+# Then:
+#   kubectl apply -f deploy/operator.yaml
+#
+# RBAC is minimal — only the API groups the reconciler actually touches:
+# NIMService (own + status), Deployment (child), coordination Leases
+# (for optional leader election).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nim-operator-system
+  labels:
+    app.kubernetes.io/name: nim-operator
+    app.kubernetes.io/managed-by: modelgate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nim-operator
+  namespace: nim-operator-system
+  labels:
+    app.kubernetes.io/name: nim-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nim-operator
+  labels:
+    app.kubernetes.io/name: nim-operator
+rules:
+  # Own resource: read the spec, write status back.
+  - apiGroups: ["modelgate.dev"]
+    resources: ["nimservices"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["modelgate.dev"]
+    resources: ["nimservices/status"]
+    verbs: ["get", "update", "patch"]
+  # Child resource: the reconciler creates and reconciles Deployments.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Leader election, if enabled via --leader-elect. Off by default;
+  # kept in RBAC so single-flag upgrades don't need an RBAC change.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Emit events for kubectl describe / audit trails.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nim-operator
+  labels:
+    app.kubernetes.io/name: nim-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nim-operator
+subjects:
+  - kind: ServiceAccount
+    name: nim-operator
+    namespace: nim-operator-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nim-operator
+  namespace: nim-operator-system
+  labels:
+    app.kubernetes.io/name: nim-operator
+    app.kubernetes.io/component: controller
+spec:
+  # Single replica — leader election is off by default. Bump to 2+
+  # and pass --leader-elect to run active/standby.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nim-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nim-operator
+    spec:
+      serviceAccountName: nim-operator
+      # Distroless runs as UID 65532 by default; be explicit so pod
+      # security admission (restricted profile) accepts the pod.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          # Replace with a real registry path once the image is published.
+          image: ghcr.io/amayabdaniel/nim-operator:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          ports:
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+            - containerPort: 8081
+              name: health
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 10

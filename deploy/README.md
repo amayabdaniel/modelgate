@@ -8,20 +8,28 @@ Kubernetes manifests for running the NIM operator and declaring
 - `crd/nimservice.yaml` — CustomResourceDefinition for `NIMService`.
   Includes the OpenAPI schema, `status` + `scale` subresources, and
   printer columns for `kubectl get nim`.
+- `operator.yaml` — Namespace, ServiceAccount, ClusterRole /
+  ClusterRoleBinding, and Deployment for the operator itself. Points
+  at `ghcr.io/amayabdaniel/nim-operator:latest` — retag if you push
+  the image to a different registry.
 - `examples/nimservice-llama3.yaml` — a realistic NIMService plus its
   NGC secret placeholder. Copy, replace the secret value, and apply.
 
 ## Bootstrap
 
 ```
+# 1. Install the CRD.
 kubectl apply -f deploy/crd/nimservice.yaml
-# Verify the CRD is registered.
 kubectl get crd nimservices.modelgate.dev
 
-# Build + run the operator (in-cluster, out-of-cluster kubeconfig,
-# or via a Deployment manifest — that image build lives in the ops
-# repo). For local dev against a kind cluster:
+# 2a. Local dev (out-of-cluster, uses current kubectl context):
 make operator-run
+
+# 2b. In-cluster deploy (uses the published operator image):
+make operator-image                     # build + tag ghcr.io/amayabdaniel/nim-operator:latest
+docker push ghcr.io/amayabdaniel/nim-operator:latest
+kubectl apply -f deploy/operator.yaml
+kubectl -n nim-operator-system get pods
 ```
 
 Once the CRD is installed and the operator is running:
