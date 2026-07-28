@@ -11,13 +11,15 @@ Teams deploy LLMs behind vLLM/Ollama/Triton. Anyone can send anything. No prompt
 ## How it works
 
 ```
-  Client ──▶ modelgate ──▶ vLLM / Ollama / any OpenAI-compatible API
+  Client ──▶ modelgate ──▶ vLLM / Ollama / NIM / any OpenAI-compatible API
                 │
                 ├── Check prompt injection (13 patterns + custom)
+                ├── Optional NeMo Guardrails colang check
                 ├── Detect PII in prompt (email, phone, SSN, CC)
                 ├── Enforce token rate limits per tenant
                 ├── Normalize unicode (defeat encoding bypass)
                 ├── Audit log every request (model, tenant, action)
+                ├── Fan audit events out to /v1/audit/stream (SSE)
                 │
                 ▼
            Allow or Block (403 with structured error)
@@ -108,6 +110,8 @@ $ curl http://localhost:8080/v1/chat/completions \
 | Security headers | X-Content-Type-Options, X-Frame-Options, Cache-Control |
 | Max body size | 10MB request body limit |
 | Audit logging | Every request logged with model, tenant, action, violations |
+| NeMo Guardrails | Optional Colang rails check before upstream forward; configurable fail-open/fail-closed |
+| Live audit stream | `/v1/audit/stream` SSE feed of every audit event, for downstream anomaly detection (e.g. gpudab's Morpheus DFP) |
 
 ### OWASP LLM Top 10 coverage
 
@@ -120,6 +124,26 @@ $ curl http://localhost:8080/v1/chat/completions \
 
 See [SECURITY.md](SECURITY.md) for full threat model and coverage matrix.
 
+## Backends
+
+`--provider` selects how modelgate talks to the upstream:
+
+| Provider | Notes |
+|---|---|
+| `generic` | Default. Passthrough, no provider-specific auth. |
+| `nim` | NVIDIA NIM — OpenAI-compatible, bearer auth, readiness probe against the NIM health path. |
+
+## Kubernetes-native NIM deployment
+
+For clusters that want modelgate to manage NIM inference pods directly
+instead of just proxying to an existing endpoint, `cmd/nim-operator`
+(built with `-tags k8s`, kept out of the default proxy binary) reconciles
+a `NIMService` custom resource into an `apps/v1.Deployment` — GPU
+requests, NGC key projection, readiness-driven `Pending → Progressing →
+Ready` status, and a `scale` subresource for `kubectl scale`. See
+[deploy/README.md](deploy/README.md) for the CRD, RBAC, and bootstrap
+steps.
+
 ## Related projects
 
 - [inferctl](https://github.com/amayabdaniel/inferctl) — deploy the models modelgate protects
@@ -128,8 +152,9 @@ See [SECURITY.md](SECURITY.md) for full threat model and coverage matrix.
 ## Tests
 
 ```bash
-make test    # 56 tests
-make build   # builds to bin/modelgate
+make test                    # proxy + policy + guardrails + CRD types, 126 tests
+go test -tags k8s ./...      # adds cmd/nim-operator + controller-runtime paths, 138 tests
+make build                   # builds to bin/modelgate
 ```
 
 ## License
