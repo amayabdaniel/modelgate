@@ -279,6 +279,17 @@ func TestBuildDeployment_LabelsAndEnv(t *testing.T) {
 	}
 }
 
+func TestBuildDeployment_PropagatesOwnerUID(t *testing.T) {
+	svc := newSvc(v1alpha1.NIMServiceSpec{Image: "img:1"})
+	svc.Metadata.UID = "abc-123"
+	svc.Spec.ApplyDefaults()
+
+	d := BuildDeployment(svc)
+	if d.OwnerUID != "abc-123" {
+		t.Errorf("OwnerUID: want abc-123, got %q", d.OwnerUID)
+	}
+}
+
 func hasCondition(cs []v1alpha1.Condition, typ, status string) bool {
 	for _, c := range cs {
 		if c.Type == typ && c.Status == status {

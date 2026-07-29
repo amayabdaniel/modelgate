@@ -67,6 +67,48 @@ func TestRenderDeploymentBasics(t *testing.T) {
 	}
 }
 
+func TestRenderDeploymentOwnerReference(t *testing.T) {
+	d := &controller.Deployment{
+		Name:      "llama3-8b",
+		Namespace: "nim",
+		OwnerUID:  "abc-123",
+	}
+
+	got := renderDeployment(d)
+	refs := got.OwnerReferences
+	if len(refs) != 1 {
+		t.Fatalf("expected exactly one owner reference, got %+v", refs)
+	}
+	ref := refs[0]
+	if ref.Kind != "NIMService" {
+		t.Errorf("expected owner Kind NIMService, got %q", ref.Kind)
+	}
+	if ref.APIVersion != "modelgate.dev/v1alpha1" {
+		t.Errorf("expected owner APIVersion modelgate.dev/v1alpha1, got %q", ref.APIVersion)
+	}
+	if ref.Name != d.Name {
+		t.Errorf("expected owner Name %s, got %s", d.Name, ref.Name)
+	}
+	if string(ref.UID) != d.OwnerUID {
+		t.Errorf("expected owner UID %s, got %s", d.OwnerUID, ref.UID)
+	}
+	if ref.Controller == nil || !*ref.Controller {
+		t.Error("expected Controller=true so GC treats NIMService as the controlling owner")
+	}
+	if ref.BlockOwnerDeletion == nil || !*ref.BlockOwnerDeletion {
+		t.Error("expected BlockOwnerDeletion=true")
+	}
+}
+
+func TestRenderDeploymentNoOwnerReferenceWithoutUID(t *testing.T) {
+	d := &controller.Deployment{Name: "bare", Namespace: "default"}
+
+	got := renderDeployment(d)
+	if got.OwnerReferences != nil {
+		t.Fatalf("expected no owner references when OwnerUID is empty, got %+v", got.OwnerReferences)
+	}
+}
+
 func TestRenderDeploymentEnvSecretRef(t *testing.T) {
 	d := &controller.Deployment{
 		Name: "svc",

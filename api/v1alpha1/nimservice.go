@@ -27,6 +27,14 @@ type ObjectMeta struct {
 	Namespace  string            `json:"namespace,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	Generation int64             `json:"generation,omitempty"`
+
+	// UID is the cluster-assigned identity of the underlying object.
+	// The adapter stamps it onto the Deployment it creates as an
+	// OwnerReference so Kubernetes garbage-collects the Deployment when
+	// the NIMService is deleted. Empty for specs built outside a live
+	// cluster (e.g. test fixtures) — the adapter skips owner-reference
+	// stamping in that case rather than emit a reference with no UID.
+	UID string `json:"uid,omitempty"`
 }
 
 // NIMServiceSpec declares the desired state of a NIM deployment.

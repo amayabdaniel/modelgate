@@ -108,7 +108,10 @@ func (k *kubeClient) CreateOrUpdateDeployment(ctx context.Context, d *controller
 		return fmt.Errorf("pre-update get: %w", err)
 	}
 	// Patch a minimal set — Labels, container Spec, replica count.
+	// OwnerReferences is included so Deployments created before owner-
+	// reference stamping was added get adopted on their next reconcile.
 	existing.Labels = desired.Labels
+	existing.OwnerReferences = desired.OwnerReferences
 	existing.Spec.Replicas = desired.Spec.Replicas
 	existing.Spec.Template = desired.Spec.Template
 	// Selector is immutable after Create; preserve whatever exists.
@@ -153,9 +156,10 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 	replicas := d.Replicas
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      d.Name,
-			Namespace: d.Namespace,
-			Labels:    labels,
+			Name:            d.Name,
+			Namespace:       d.Namespace,
+			Labels:          labels,
+			OwnerReferences: ownerReferences(d),
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -192,6 +196,28 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 			},
 		},
 	}
+}
+
+// ownerReferences returns the single OwnerReference tying the rendered
+// Deployment to its NIMService, or nil when d carries no OwnerUID (a
+// plain-Go Deployment built outside a live cluster). Controller+
+// BlockOwnerDeletion are both true so the API server's GC deletes this
+// Deployment when the NIMService is deleted, and refuses to delete the
+// NIMService first while the Deployment still references it.
+func ownerReferences(d *controller.Deployment) []metav1.OwnerReference {
+	if d.OwnerUID == "" {
+		return nil
+	}
+	isController := true
+	blockDeletion := true
+	return []metav1.OwnerReference{{
+		APIVersion:         v1alpha1.GroupVersion.String(),
+		Kind:               "NIMService",
+		Name:               d.Name,
+		UID:                types.UID(d.OwnerUID),
+		Controller:         &isController,
+		BlockOwnerDeletion: &blockDeletion,
+	}}
 }
 
 // mergeLabels returns a new map containing every kv from base plus

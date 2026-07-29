@@ -37,6 +37,14 @@ type Deployment struct {
 	// ObservedReadyReplicas is filled in by the Client on GetDeployment.
 	// Reconcile() leaves it untouched when planning desired state.
 	ObservedReadyReplicas int32
+
+	// OwnerUID is the owning NIMService's cluster UID. The adapter uses
+	// it to stamp an OwnerReference on the Deployment it creates, so
+	// deleting the NIMService lets Kubernetes garbage-collect the
+	// Deployment instead of leaving it (and its GPU allocation) running
+	// forever. Empty when the NIMService has no UID yet (e.g. plain-Go
+	// test fixtures) — the adapter skips stamping in that case.
+	OwnerUID string
 }
 
 // Client is the narrow surface the reconciler needs from Kubernetes.
@@ -144,6 +152,7 @@ func BuildDeployment(svc *v1alpha1.NIMService) *Deployment {
 		GPURequest: svc.Spec.GPURequest,
 		Port:       svc.Spec.Port,
 		Env:        env,
+		OwnerUID:   svc.Metadata.UID,
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // GroupVersion is the canonical GV for modelgate CRDs. Registered with
@@ -138,6 +139,7 @@ func ToKubeNIMService(src *NIMService) *KubeNIMService {
 			Namespace:  src.Metadata.Namespace,
 			Labels:     labels,
 			Generation: src.Metadata.Generation,
+			UID:        types.UID(src.Metadata.UID),
 		},
 		Spec:   src.Spec,
 		Status: src.Status,
@@ -162,6 +164,7 @@ func FromKubeNIMService(src *KubeNIMService) *NIMService {
 			Namespace:  src.Namespace,
 			Labels:     labels,
 			Generation: src.Generation,
+			UID:        string(src.UID),
 		},
 		Spec:   src.Spec,
 		Status: src.Status,
