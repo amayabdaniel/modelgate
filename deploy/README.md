@@ -48,6 +48,10 @@ projects `NGC_API_KEY` from the referenced Secret, requests
 probe. `Degraded` shows up when the spec fails validation; the
 `NGCKeyPresent` condition surfaces when `ngcSecretName` is omitted.
 
+The Deployment carries an `OwnerReference` back to its `NIMService`, so
+`kubectl delete nim/llama3-8b` garbage-collects the Deployment (and the
+GPU allocation it holds) automatically — no separate cleanup step.
+
 ## Scale operations
 
 Because the CRD declares a `scale` subresource, standard kubectl
