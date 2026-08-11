@@ -44,15 +44,20 @@ func (tb *TokenBucket) Allow(tenant string, tokens int) bool {
 		tb.buckets[tenant] = b
 	}
 
-	// Refill based on elapsed time
+	// Refill based on elapsed whole intervals. lastFill advances by
+	// exactly the credited intervals (not time.Now()) so a sub-interval
+	// remainder carries over to the next check instead of being
+	// discarded — otherwise a tenant whose request cadence doesn't land
+	// on clean interval boundaries gets refilled below the configured
+	// rate indefinitely.
 	elapsed := time.Since(b.lastFill)
-	refill := int(elapsed.Minutes()) * tb.rate
-	if refill > 0 {
-		b.tokens += refill
+	wholeIntervals := int(elapsed / tb.interval)
+	if wholeIntervals > 0 {
+		b.tokens += wholeIntervals * tb.rate
 		if b.tokens > tb.capacity {
 			b.tokens = tb.capacity
 		}
-		b.lastFill = time.Now()
+		b.lastFill = b.lastFill.Add(time.Duration(wholeIntervals) * tb.interval)
 	}
 
 	if b.tokens >= tokens {
