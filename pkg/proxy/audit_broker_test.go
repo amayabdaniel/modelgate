@@ -161,3 +161,61 @@ func TestAuditBroker_UnsubscribeIdempotent(t *testing.T) {
 	b.Unsubscribe(s) // must not panic
 	b.Unsubscribe(nil)
 }
+
+func TestAuditBroker_TotalDropped_TracksOverflowsAcrossAllSubscribers(t *testing.T) {
+	b := NewAuditBroker()
+	defer b.Close()
+
+	if b.TotalDropped() != 0 {
+		t.Errorf("fresh broker should have 0 total dropped, got %d", b.TotalDropped())
+	}
+
+	s1 := b.Subscribe(1)
+	s2 := b.Subscribe(1)
+
+	// First publish fills both buffers, no drops yet.
+	b.Publish(AuditEvent{Tenant: "t1"})
+	if b.TotalDropped() != 0 {
+		t.Errorf("no overflow yet, want 0, got %d", b.TotalDropped())
+	}
+
+	// Second publish overflows both full buffers: 2 broker-wide drops.
+	b.Publish(AuditEvent{Tenant: "t1"})
+	if got := b.TotalDropped(); got != 2 {
+		t.Errorf("want 2 total dropped after both subscribers overflow, got %d", got)
+	}
+	if s1.Dropped()+s2.Dropped() != b.TotalDropped() {
+		t.Errorf("sum of per-subscriber dropped (%d+%d) should equal broker total (%d)",
+			s1.Dropped(), s2.Dropped(), b.TotalDropped())
+	}
+}
+
+func TestAuditBroker_TotalDropped_SurvivesUnsubscribe(t *testing.T) {
+	b := NewAuditBroker()
+	defer b.Close()
+
+	sub := b.Subscribe(1)
+	b.Publish(AuditEvent{Tenant: "t1"}) // fills buffer
+	b.Publish(AuditEvent{Tenant: "t1"}) // overflows: 1 drop
+	if b.TotalDropped() != 1 {
+		t.Fatalf("want 1 total dropped before unsubscribe, got %d", b.TotalDropped())
+	}
+
+	// Unsubscribe discards sub's own counter, but the broker-lifetime
+	// total must not reset — that's the whole point of tracking it
+	// separately from each subscription's Dropped().
+	b.Unsubscribe(sub)
+	if b.TotalDropped() != 1 {
+		t.Errorf("total dropped must survive unsubscribe, want 1, got %d", b.TotalDropped())
+	}
+
+	// A fresh subscriber overflowing afterward should add to the same
+	// running total, not start a new one.
+	sub2 := b.Subscribe(1)
+	b.Publish(AuditEvent{Tenant: "t2"})
+	b.Publish(AuditEvent{Tenant: "t2"})
+	if b.TotalDropped() != 2 {
+		t.Errorf("want 2 total dropped after second subscriber overflow, got %d", b.TotalDropped())
+	}
+	_ = sub2
+}

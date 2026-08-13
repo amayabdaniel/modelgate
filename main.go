@@ -74,6 +74,7 @@ func main() {
 	// path never blocks: a slow subscriber drops, not stalls.
 	auditBroker := proxy.NewAuditBroker()
 	defer auditBroker.Close()
+	stats.WithAuditBroker(auditBroker)
 
 	// Audit logging with stats integration + broker fan-out.
 	auditFn := func(event proxy.AuditEvent) {

@@ -29,6 +29,26 @@ type Stats struct {
 
 	// Per-rule violation counts
 	violationCounts map[string]*atomic.Int64
+
+	// audit is an optional AuditBroker probe so /stats can report
+	// audit-stream health at the source, not just from a downstream
+	// consumer's point of view. Nil when WithAuditBroker was never
+	// called (e.g. tests that don't wire a broker).
+	audit auditBrokerProbe
+}
+
+// auditBrokerProbe is the narrow read surface Stats needs from an
+// AuditBroker. Satisfied by *AuditBroker; kept as an interface so tests
+// can substitute a fake without spinning up subscriptions.
+type auditBrokerProbe interface {
+	Subscribers() int
+	TotalDropped() int64
+}
+
+// AuditStreamStats is the /stats view of audit-stream broker health.
+type AuditStreamStats struct {
+	Subscribers  int   `json:"subscribers"`
+	TotalDropped int64 `json:"total_dropped"`
 }
 
 // TenantStats tracks per-tenant usage.
@@ -50,6 +70,7 @@ type StatsResponse struct {
 	BlockRate        float64                      `json:"block_rate_percent"`
 	Tenants          map[string]TenantStatsJSON   `json:"tenants"`
 	ViolationCounts  map[string]int64             `json:"violation_counts"`
+	AuditStream      *AuditStreamStats            `json:"audit_stream,omitempty"`
 }
 
 // TenantStatsJSON is the per-tenant JSON shape.
@@ -66,6 +87,19 @@ func NewStats() *Stats {
 		tenantStats:     make(map[string]*TenantStats),
 		violationCounts: make(map[string]*atomic.Int64),
 	}
+}
+
+// WithAuditBroker registers the process's AuditBroker so /stats exposes
+// its subscriber count and lifetime dropped-event total. Pass nil (or
+// never call this) to leave the field omitted. Returns the receiver so
+// callers can chain from NewStats.
+func (s *Stats) WithAuditBroker(broker auditBrokerProbe) *Stats {
+	if broker != nil {
+		s.mu.Lock()
+		s.audit = broker
+		s.mu.Unlock()
+	}
+	return s
 }
 
 // SetProvider records which upstream provider is being proxied so the
@@ -166,7 +200,16 @@ func (s *Stats) ToResponse() StatsResponse {
 	}
 	provider := s.provider
 	backend := s.backend
+	audit := s.audit
 	s.mu.RUnlock()
+
+	var auditStream *AuditStreamStats
+	if audit != nil {
+		auditStream = &AuditStreamStats{
+			Subscribers:  audit.Subscribers(),
+			TotalDropped: audit.TotalDropped(),
+		}
+	}
 
 	return StatsResponse{
 		Uptime:          time.Since(s.StartedAt).Round(time.Second).String(),
@@ -179,6 +222,7 @@ func (s *Stats) ToResponse() StatsResponse {
 		BlockRate:       blockRate,
 		Tenants:         tenants,
 		ViolationCounts: violations,
+		AuditStream:     auditStream,
 	}
 }
 

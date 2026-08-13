@@ -26,6 +26,14 @@ type AuditBroker struct {
 	mu      sync.RWMutex
 	subs    map[*AuditSubscription]struct{}
 	closed  bool
+
+	// totalDropped is a broker-lifetime counter, unlike each
+	// AuditSubscription's own dropped tally: a subscription's counter is
+	// discarded on Unsubscribe (e.g. every gpudab reconnect), so it can
+	// never show operators drops that happened under a prior consumer.
+	// This one only grows, giving /stats a "have we ever fallen behind
+	// any consumer" signal independent of who is currently attached.
+	totalDropped atomic.Int64
 }
 
 // AuditSubscription is one consumer's view into the broker. The Events
@@ -95,6 +103,7 @@ func (b *AuditBroker) Publish(ev AuditEvent) int {
 			delivered++
 		default:
 			sub.dropped.Add(1)
+			b.totalDropped.Add(1)
 		}
 	}
 	return delivered
@@ -130,3 +139,9 @@ func (b *AuditBroker) Subscribers() int {
 // missed because its buffer was full. Consumers can include this in
 // SSE keepalive frames so downstream systems can detect gaps.
 func (s *AuditSubscription) Dropped() int64 { return s.dropped.Load() }
+
+// TotalDropped returns the broker's lifetime count of events dropped
+// across every subscription it has ever fanned out to, including ones
+// that have since unsubscribed. See the totalDropped field comment for
+// why this differs from summing current subscriptions' Dropped().
+func (b *AuditBroker) TotalDropped() int64 { return b.totalDropped.Load() }

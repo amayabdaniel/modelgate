@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +119,52 @@ func TestStats_ZeroBlockRate(t *testing.T) {
 	resp := s.ToResponse()
 	if resp.BlockRate != 0 {
 		t.Errorf("expected 0 block rate with no requests, got %f", resp.BlockRate)
+	}
+}
+
+func TestStats_AuditStream_OmittedWhenNoBrokerWired(t *testing.T) {
+	s := NewStats()
+	resp := s.ToResponse()
+	if resp.AuditStream != nil {
+		t.Errorf("expected nil AuditStream with no broker wired, got %+v", resp.AuditStream)
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "audit_stream") {
+		t.Errorf("expected audit_stream key omitted from JSON, got %s", data)
+	}
+}
+
+func TestStats_AuditStream_ReflectsBroker(t *testing.T) {
+	b := NewAuditBroker()
+	defer b.Close()
+	s := NewStats().WithAuditBroker(b)
+
+	sub := b.Subscribe(1)
+	b.Publish(AuditEvent{Tenant: "t1"}) // fills buffer
+	b.Publish(AuditEvent{Tenant: "t1"}) // overflows: 1 drop
+	_ = sub
+
+	resp := s.ToResponse()
+	if resp.AuditStream == nil {
+		t.Fatal("expected non-nil AuditStream once a broker is wired")
+	}
+	if resp.AuditStream.Subscribers != 1 {
+		t.Errorf("want 1 subscriber, got %d", resp.AuditStream.Subscribers)
+	}
+	if resp.AuditStream.TotalDropped != 1 {
+		t.Errorf("want 1 total dropped, got %d", resp.AuditStream.TotalDropped)
+	}
+}
+
+func TestStats_WithAuditBroker_NilIsNoop(t *testing.T) {
+	s := NewStats()
+	s.WithAuditBroker(nil)
+	resp := s.ToResponse()
+	if resp.AuditStream != nil {
+		t.Errorf("WithAuditBroker(nil) must not wire a probe, got %+v", resp.AuditStream)
 	}
 }

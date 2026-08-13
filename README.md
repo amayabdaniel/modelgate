@@ -152,8 +152,8 @@ steps.
 ## Tests
 
 ```bash
-make test                    # proxy + policy + guardrails + CRD types, 128 tests
-go test -tags k8s ./...      # adds cmd/nim-operator + controller-runtime paths, 139 tests
+make test                    # proxy + policy + guardrails + CRD types, 133 tests
+go test -tags k8s ./...      # adds cmd/nim-operator + controller-runtime paths, 144 tests
 make build                   # builds to bin/modelgate
 ```
 
