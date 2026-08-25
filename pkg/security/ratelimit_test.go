@@ -89,6 +89,62 @@ func TestTokenBucket_ZeroTokenRequest(t *testing.T) {
 	}
 }
 
+// TestTokenBucket_RemainingRefillsWithoutAllow guards against a bug
+// where Remaining returned the stored token count without crediting
+// any refill that should have happened since the last Allow call.
+// Callers polling Remaining (dashboards, admin surfaces, /v1/quota)
+// would see values that only advanced when Allow itself ran — a
+// tenant idle for hours would appear stuck at whatever token count
+// was recorded on their last request.
+//
+// Uses the shrunk-interval / direct-manipulation pattern from
+// TestTokenBucket_RefillPreservesSubIntervalRemainder so timing is
+// exact and not flaky.
+func TestTokenBucket_RemainingRefillsWithoutAllow(t *testing.T) {
+	tb := NewTokenBucket(5, 100) // 5 tokens/interval, capacity 100
+	tb.interval = time.Second
+
+	// Seed: 3 tokens stored, lastFill "3 seconds ago" — 3 whole
+	// intervals should have refilled 15 tokens without any Allow call.
+	tb.mu.Lock()
+	tb.buckets["team-a"] = &bucket{
+		tokens:   3,
+		lastFill: time.Now().Add(-3 * time.Second),
+	}
+	tb.mu.Unlock()
+
+	got := tb.Remaining("team-a")
+	if got != 18 { // 3 stored + 3 intervals * 5 tokens
+		t.Errorf("Remaining must credit elapsed refills; want 18 (3 + 3*5), got %d", got)
+	}
+
+	// Second poll immediately after must be idempotent — no double
+	// crediting from the same wall clock. lastFill was advanced by
+	// exactly 3 seconds inside the first Remaining call.
+	if again := tb.Remaining("team-a"); again != 18 {
+		t.Errorf("second Remaining call must be idempotent, got %d", again)
+	}
+}
+
+// TestTokenBucket_RemainingCapsAtCapacity ensures the refill inside
+// Remaining honors the burst cap just like Allow does — a tenant idle
+// for a long time cannot accumulate above capacity.
+func TestTokenBucket_RemainingCapsAtCapacity(t *testing.T) {
+	tb := NewTokenBucket(10, 25) // 10/interval, cap 25
+	tb.interval = time.Second
+
+	tb.mu.Lock()
+	tb.buckets["team-a"] = &bucket{
+		tokens:   0,
+		lastFill: time.Now().Add(-1 * time.Hour), // way more than cap
+	}
+	tb.mu.Unlock()
+
+	if got := tb.Remaining("team-a"); got != 25 {
+		t.Errorf("Remaining refill must cap at burst capacity; want 25, got %d", got)
+	}
+}
+
 // TestTokenBucket_RefillPreservesSubIntervalRemainder guards against a
 // regression where a refill snapped lastFill to time.Now() instead of
 // advancing it by exactly the whole intervals just credited. That

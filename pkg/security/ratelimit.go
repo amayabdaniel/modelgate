@@ -35,30 +35,8 @@ func (tb *TokenBucket) Allow(tenant string, tokens int) bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	b, ok := tb.buckets[tenant]
-	if !ok {
-		b = &bucket{
-			tokens:   tb.capacity,
-			lastFill: time.Now(),
-		}
-		tb.buckets[tenant] = b
-	}
-
-	// Refill based on elapsed whole intervals. lastFill advances by
-	// exactly the credited intervals (not time.Now()) so a sub-interval
-	// remainder carries over to the next check instead of being
-	// discarded — otherwise a tenant whose request cadence doesn't land
-	// on clean interval boundaries gets refilled below the configured
-	// rate indefinitely.
-	elapsed := time.Since(b.lastFill)
-	wholeIntervals := int(elapsed / tb.interval)
-	if wholeIntervals > 0 {
-		b.tokens += wholeIntervals * tb.rate
-		if b.tokens > tb.capacity {
-			b.tokens = tb.capacity
-		}
-		b.lastFill = b.lastFill.Add(time.Duration(wholeIntervals) * tb.interval)
-	}
+	b := tb.getOrCreateLocked(tenant)
+	tb.refillLocked(b)
 
 	if b.tokens >= tokens {
 		b.tokens -= tokens
@@ -68,7 +46,11 @@ func (tb *TokenBucket) Allow(tenant string, tokens int) bool {
 	return false
 }
 
-// Remaining returns the number of tokens remaining for a tenant.
+// Remaining returns the number of tokens remaining for a tenant, after
+// crediting any refill that should have happened since the last Allow
+// call. Without this refill, callers polling Remaining (dashboards,
+// admin surfaces, /v1/quota) would see stale values that only advance
+// when Allow itself runs.
 func (tb *TokenBucket) Remaining(tenant string) int {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
@@ -77,7 +59,43 @@ func (tb *TokenBucket) Remaining(tenant string) int {
 	if !ok {
 		return tb.capacity
 	}
+	tb.refillLocked(b)
 	return b.tokens
+}
+
+// getOrCreateLocked returns the bucket for tenant, allocating a
+// full-capacity one if none exists. Caller must hold tb.mu.
+func (tb *TokenBucket) getOrCreateLocked(tenant string) *bucket {
+	if b, ok := tb.buckets[tenant]; ok {
+		return b
+	}
+	b := &bucket{
+		tokens:   tb.capacity,
+		lastFill: time.Now(),
+	}
+	tb.buckets[tenant] = b
+	return b
+}
+
+// refillLocked credits tokens for whole intervals elapsed since the
+// last fill. lastFill advances by exactly the credited intervals (not
+// time.Now()) so a sub-interval remainder carries over to the next
+// check instead of being discarded — otherwise a tenant whose request
+// cadence doesn't land on clean interval boundaries gets refilled
+// below the configured rate indefinitely.
+//
+// Caller must hold tb.mu.
+func (tb *TokenBucket) refillLocked(b *bucket) {
+	elapsed := time.Since(b.lastFill)
+	wholeIntervals := int(elapsed / tb.interval)
+	if wholeIntervals <= 0 {
+		return
+	}
+	b.tokens += wholeIntervals * tb.rate
+	if b.tokens > tb.capacity {
+		b.tokens = tb.capacity
+	}
+	b.lastFill = b.lastFill.Add(time.Duration(wholeIntervals) * tb.interval)
 }
 
 // Reset clears the rate limiter state for a tenant.
