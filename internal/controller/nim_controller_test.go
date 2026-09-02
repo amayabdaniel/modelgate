@@ -172,6 +172,55 @@ func TestReconcile_PendingPhase_WhenZeroReady(t *testing.T) {
 	}
 }
 
+// TestDerivePhase_ScaleToZeroInProgress guards the specific case the
+// old derivePhase got wrong: desired=0 was hardcoded to "Ready"
+// regardless of ready count, so a scale-down that hadn't yet shut down
+// pods (which are still holding GPU allocations) showed "Ready" while
+// resources were still occupied. Operators reading `kubectl get nim`
+// would think the scale-down completed when it hadn't.
+func TestDerivePhase_ScaleToZeroInProgress(t *testing.T) {
+	if got := derivePhase(0, 5); got != "Progressing" {
+		t.Errorf("desired=0 ready=5 (pods still running mid-shutdown) must be Progressing, got %q", got)
+	}
+	// The already-quiesced case must still be Ready.
+	if got := derivePhase(0, 0); got != "Ready" {
+		t.Errorf("desired=0 ready=0 (fully scaled down) must be Ready, got %q", got)
+	}
+}
+
+// TestDerivePhase_ScaleDownInProgress guards the mid-scale-down case:
+// the old default branch returned "Ready" whenever the switch fell
+// through, which included the `ready > desired` case where extra
+// replicas were still running and holding GPU allocations after the
+// operator scaled down.
+func TestDerivePhase_ScaleDownInProgress(t *testing.T) {
+	if got := derivePhase(3, 5); got != "Progressing" {
+		t.Errorf("desired=3 ready=5 (extra replicas still holding GPUs) must be Progressing, got %q", got)
+	}
+}
+
+// TestDerivePhase_KnownGoodCases locks in every phase the reconciler
+// is supposed to report so a future rewrite can't silently regress the
+// cases the bug fix depends on maintaining.
+func TestDerivePhase_KnownGoodCases(t *testing.T) {
+	cases := []struct {
+		desired, ready int32
+		want           string
+	}{
+		{desired: 3, ready: 3, want: "Ready"},          // healthy steady-state
+		{desired: 3, ready: 0, want: "Pending"},        // cold start
+		{desired: 3, ready: 1, want: "Progressing"},    // scaling up
+		{desired: 0, ready: 0, want: "Ready"},          // intentional scale-to-zero, quiesced
+		{desired: 0, ready: 3, want: "Progressing"},    // scale-to-zero in flight
+		{desired: 2, ready: 5, want: "Progressing"},    // scale-down in flight
+	}
+	for _, tc := range cases {
+		if got := derivePhase(tc.desired, tc.ready); got != tc.want {
+			t.Errorf("derivePhase(desired=%d, ready=%d) = %q, want %q", tc.desired, tc.ready, got, tc.want)
+		}
+	}
+}
+
 func TestReconcile_ScaledToZero_IsReadyAndPropagatesZeroToDeployment(t *testing.T) {
 	// Explicit scale-to-zero: Replicas is a non-nil pointer to 0. The
 	// reconciler must honor that (not promote to 1) and the Deployment

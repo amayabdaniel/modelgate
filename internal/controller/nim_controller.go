@@ -157,18 +157,30 @@ func BuildDeployment(svc *v1alpha1.NIMService) *Deployment {
 }
 
 // derivePhase summarizes the reconcile state for `kubectl get`.
+//
+// Two subtleties that the previous impl got wrong by claiming "Ready"
+// whenever `desired == 0`, and by falling through to a default "Ready"
+// when `ready > desired`:
+//
+//   - Scale-to-zero commanded but pods still running (`desired=0,
+//     ready>0`) is NOT ready — those pods are still holding GPU
+//     allocations. Operators need to see "Progressing" (i.e. shutdown
+//     in flight) so they don't think their scale-down took effect.
+//   - Scale-down mid-transition (`ready > desired > 0`) has extra
+//     replicas still running. The old default branch called that
+//     "Ready" too, which hides the transient over-allocation.
+//
+// The invariant: Ready iff `ready == desired`. Any drift in either
+// direction that isn't a cold-start (which we call Pending) is a
+// transition — "Progressing".
 func derivePhase(desired, ready int32) string {
 	switch {
-	case desired == 0:
-		return "Ready" // intentionally scaled to zero
-	case ready == 0:
-		return "Pending"
-	case ready < desired:
-		return "Progressing"
 	case ready == desired:
 		return "Ready"
+	case desired > 0 && ready == 0:
+		return "Pending"
 	default:
-		return "Ready"
+		return "Progressing"
 	}
 }
 
