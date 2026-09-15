@@ -53,6 +53,18 @@ type Middleware struct {
 // enough to make accidental collisions vanishingly rare in a
 // detection-window-sized event set while keeping payloads compact.
 //
+// DRIFT NOTE — Action values are documented in three places without a
+// test wiring them together: this godoc block, SECURITY.md principle #4
+// ("Audit everything"), and README.md's "Audit contract" paragraph. If
+// you add a fourth Action value or rename one, update all three; a
+// prior incarnation of SECURITY.md principle #5 became silently false
+// when the guardrails fail-open default landed without anyone
+// revisiting the doc. Downstream: gpudab-server's AuditConsumer at
+// internal/source/cuanomaly/audit_consumer.go switches on "allowed"
+// and "blocked" and passes any other Action through as Requests-only,
+// so a new value is safe to add there without a code change but the
+// docstring's Action-mapping table needs updating too.
+//
 // Action values:
 //   - "allowed"     — all configured checks ran and none fired. Reason
 //                     may still be set to note a non-terminal event
