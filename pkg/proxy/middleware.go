@@ -86,12 +86,33 @@ type Middleware struct {
 type AuditEvent struct {
 	Model               string               `json:"model"`
 	Tenant              string               `json:"tenant"`
-	Action              string               `json:"action"` // "allowed", "blocked", "passthrough"
+	Action              string               `json:"action"` // one of AuditActions
 	Reason              string               `json:"reason,omitempty"`
 	Violations          []security.Violation `json:"violations,omitempty"`
 	PromptLength        int                  `json:"prompt_length,omitempty"`
 	PromptHash          string               `json:"prompt_hash,omitempty"`
 	ProcessingLatencyMs int64                `json:"processing_latency_ms,omitempty"`
+}
+
+// AuditActions is the canonical list of values the AuditEvent.Action
+// field is allowed to take. It is the single source of truth cross-
+// referenced by the AuditEvent godoc's DRIFT NOTE, SECURITY.md
+// principle #4, and README.md's Audit contract paragraph — each of
+// those docs carries a machine-readable marker
+//
+//	<!-- audit-action-values: allowed blocked passthrough -->
+//
+// that TestAuditActionsSyncedWithDocs validates against this slice in
+// both directions: any value here must be documented as `"X"` in each
+// doc, and any value the marker declares must appear in this slice.
+// The values themselves stay as string literals at their emit sites
+// because gpudab-server's AuditConsumer switches on the same literals
+// across a repo boundary — a shared symbol would help drift here but
+// would not help drift across the wire.
+var AuditActions = []string{
+	"allowed",
+	"blocked",
+	"passthrough",
 }
 
 // OpenAIChatRequest is a minimal representation of an OpenAI chat completion request.
