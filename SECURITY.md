@@ -27,8 +27,8 @@ You will receive a response within 72 hours.
 1. **Defense in depth** — multiple layers of checks (proxy, policy, output scanning)
 2. **Deny by default** — blocked patterns, PII detection, and injection checks are opt-in but recommended as default-on
 3. **Least privilege** — pods run as non-root, drop all capabilities, read-only filesystem where possible
-4. **Audit everything** — every request produces an audit event with model, tenant, action, and violations
-5. **Fail closed** — if a security check errors, the request is blocked, not passed through
+4. **Audit everything** — every request that reaches this middleware emits an audit event. The event's `action` field distinguishes `"allowed"` (all configured checks ran and none fired), `"blocked"` (a check fired and the request never reached upstream), and `"passthrough"` (the middleware could not inspect the request — a non-POST verb, an unparseable body, or a body that didn't match the OpenAI chat schema — but the request DID reach upstream). The compliance floor is "no request ever reaches the upstream without an audit event, and if the audit event doesn't say `blocked` then the request reached the model."
+5. **Fail modes are explicit in the audit trail, not default-closed** — regex checks (prompt injection, PII, blocked patterns) fail closed. NeMo Guardrails defaults to fail-**open** so a NeMo outage doesn't take the proxy down; policies can opt into fail-closed with `guardrails_fail_closed: true`. When the fail-open branch fires, the audit event's `reason` records `guardrails unavailable (allowed by fail-open policy)` so the trail distinguishes a clean pass from a pass-during-outage — an operator asking "did guardrails inspect this prompt?" can answer no from the audit trail alone.
 
 ## Threat Model
 
@@ -47,8 +47,9 @@ You will receive a response within 72 hours.
 
 | Attack | Vector | Mitigation | Status |
 |---|---|---|---|
-| Prompt injection | User input manipulates model behavior | Regex pattern matching + blocked patterns | Implemented |
+| Prompt injection | User input manipulates model behavior | Regex pattern matching + blocked patterns | Implemented (text-content chats only — see multimodal row) |
 | Prompt injection (encoded) | Unicode/encoding tricks bypass regex | Normalize input before checking | TODO |
+| Multimodal content bypass | OpenAI chat `content` sent as an array of parts (text/image/audio) doesn't match our string-typed decoder, so it reaches upstream without regex/PII/Guardrails inspection | The middleware emits an audit event with `action: "passthrough"` and `reason: "body does not match chat schema"` so the request is visible on `/v1/audit/stream`; it is **audited but not inspected** — real inspection (json.RawMessage-based extraction of text parts, and a policy decision on what to do with image/audio parts) is scoped follow-up | Audited, not inspected |
 | Data exfiltration via output | Model leaks PII, secrets, system prompt | Output scanning + PII redaction + secret masking | Implemented |
 | Model DoS | Large prompts or rapid requests exhaust GPU | Token-aware rate limiting per tenant | Implemented |
 | Cost abuse | Tenant generates excessive inference cost | Per-tenant budget enforcement | Implemented (types), TODO (enforcement) |
@@ -60,7 +61,7 @@ You will receive a response within 72 hours.
 
 | # | Risk | Coverage |
 |---|---|---|
-| LLM01 | Prompt Injection | Implemented — 13 injection patterns + custom blocked patterns |
+| LLM01 | Prompt Injection | Implemented for text-content chats — 13 injection patterns + custom blocked patterns. Multimodal content-as-array reaches upstream audited-but-uninspected until the multimodal parser lands (see threat table above). |
 | LLM02 | Insecure Output Handling | Implemented — output scanning for PII, XSS, SQL injection, commands, secrets |
 | LLM03 | Training Data Poisoning | Out of scope (model training, not serving) |
 | LLM04 | Model Denial of Service | Implemented — token-aware rate limiting, max prompt token limits |

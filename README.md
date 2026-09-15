@@ -22,8 +22,10 @@ Teams deploy LLMs behind vLLM/Ollama/Triton. Anyone can send anything. No prompt
                 ├── Fan audit events out to /v1/audit/stream (SSE)
                 │
                 ▼
-           Allow or Block (403 with structured error)
+       Allow, Block (403), or Passthrough (uninspected — see below)
 ```
+
+**Audit contract:** every request that reaches modelgate emits an audit event. The event's `action` field is one of `"allowed"` (all configured checks ran and none fired), `"blocked"` (a check fired and the request never reached the upstream), or `"passthrough"` (the middleware couldn't inspect the request — non-POST verb, unparseable body, or a body that didn't match the OpenAI chat schema — but the request DID reach the upstream). Passthrough exists because a proxy that fronts embeddings/moderations/files endpoints and OpenAI's multimodal `content`-as-array shape can't parse every body, and the compliance floor "we can prove what went through the LLM" collapses if any request is forwarded silently. Passthrough events are visible on `/v1/audit/stream` alongside the rest. When NeMo Guardrails errors under the default fail-open policy the request is forwarded but the resulting `allowed` audit event carries `reason: "guardrails unavailable (allowed by fail-open policy)"` so a clean pass and a pass-during-outage are distinguishable.
 
 ## Quick start
 
