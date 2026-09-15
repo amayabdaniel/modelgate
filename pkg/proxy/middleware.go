@@ -52,10 +52,29 @@ type Middleware struct {
 // PromptHash is the first 16 hex chars of SHA-256(prompt) — 64 bits is
 // enough to make accidental collisions vanishingly rare in a
 // detection-window-sized event set while keeping payloads compact.
+//
+// Action values:
+//   - "allowed"     — all configured checks ran and none fired. Reason
+//                     may still be set to note a non-terminal event
+//                     (e.g. guardrails unavailable under fail-open
+//                     policy — the request was forwarded, but the audit
+//                     trail records that guardrails did NOT run).
+//   - "blocked"     — a check fired and the request never reached the
+//                     upstream; Violations describes what fired.
+//   - "passthrough" — the middleware could not inspect this request
+//                     (non-POST verb, unparseable body, non-chat schema)
+//                     but it DID reach the upstream. Emitted so the
+//                     audit trail never silently omits a request that
+//                     hit the LLM — a compliance claim of the form "we
+//                     can prove what went through" depends on the floor
+//                     that every request either was audited here or was
+//                     rejected here. Downstream consumers of the audit
+//                     stream (gpudab AuditConsumer) count these as
+//                     Requests but neither Allowed nor Blocked.
 type AuditEvent struct {
 	Model               string               `json:"model"`
 	Tenant              string               `json:"tenant"`
-	Action              string               `json:"action"` // "allowed", "blocked"
+	Action              string               `json:"action"` // "allowed", "blocked", "passthrough"
 	Reason              string               `json:"reason,omitempty"`
 	Violations          []security.Violation `json:"violations,omitempty"`
 	PromptLength        int                  `json:"prompt_length,omitempty"`
@@ -119,8 +138,32 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Request-Id", r.Header.Get("X-Request-Id"))
 
-	// Only check POST requests to chat/completions endpoints
+	// auditRaw is the audit contract's floor for pre-parse code paths
+	// that don't yet know the prompt (non-POST, body-read failure,
+	// unparseable body). Every request that reaches this middleware
+	// emits at least one audit event — silent forwarding is what would
+	// break the "prove what went through the LLM" compliance claim.
+	auditRaw := func(ev AuditEvent) {
+		if m.auditFn == nil {
+			return
+		}
+		if ev.ProcessingLatencyMs == 0 {
+			ev.ProcessingLatencyMs = time.Since(requestStart).Milliseconds()
+		}
+		m.auditFn(ev)
+	}
+
+	// Non-POST verbs (GET /v1/models, HEAD, OPTIONS, DELETE /v1/files/*)
+	// pass through to the upstream, so the audit trail MUST record
+	// them — otherwise a GET that returns uploaded file content leaves
+	// no trace here. Audited as "passthrough" (distinct from "allowed")
+	// so downstream consumers can filter on inspected-vs-not.
 	if r.Method != http.MethodPost {
+		auditRaw(AuditEvent{
+			Tenant: r.Header.Get("X-Tenant"),
+			Action: "passthrough",
+			Reason: "non-inspectable method: " + r.Method,
+		})
 		m.next.ServeHTTP(w, r)
 		return
 	}
@@ -130,6 +173,15 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// The request never reaches upstream on this path, but the
+		// attempt still belongs in the audit trail — a client repeatedly
+		// hitting MaxBytesReader is a DFP signal and needs to be visible
+		// on /v1/audit/stream.
+		auditRaw(AuditEvent{
+			Tenant: r.Header.Get("X-Tenant"),
+			Action: "blocked",
+			Reason: "body read error",
+		})
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
@@ -137,7 +189,19 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var req OpenAIChatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		// Not a valid chat request — pass through
+		// The body didn't fit the OpenAI chat schema. Two shapes fall
+		// here: a non-chat endpoint on the same proxy (embeddings,
+		// moderations, files) and — the one that reaches an LLM with
+		// user content — a chat request using OpenAI's multimodal
+		// Content-as-array shape our string-typed field can't decode.
+		// Either way the middleware never inspected it, so the audit
+		// trail records "passthrough" with the reason instead of
+		// silently going quiet.
+		auditRaw(AuditEvent{
+			Tenant: r.Header.Get("X-Tenant"),
+			Action: "passthrough",
+			Reason: "body does not match chat schema",
+		})
 		m.next.ServeHTTP(w, r)
 		return
 	}
@@ -233,6 +297,14 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// off-topic, hallucination, etc.). Failures default to fail-open so
 	// NeMo outages do not take down the proxy; policy can opt into
 	// fail-closed with GuardrailsFailClosed.
+	//
+	// guardrailsFailedOpen tracks whether the fail-open branch fired.
+	// When it does, the request is forwarded — but the final "allowed"
+	// audit event needs to say so, or the audit trail claims a check
+	// ran that never did. Without this signal, an operator asking "did
+	// guardrails inspect this prompt?" sees the same "allowed" record
+	// for the outage window as for a clean pass.
+	var guardrailsFailedOpen bool
 	m.mu.RLock()
 	gr := m.guardrails
 	m.mu.RUnlock()
@@ -259,6 +331,7 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+			guardrailsFailedOpen = true
 			log.Printf("modelgate: guardrails check failed (fail-open): %v", grErr)
 
 		case len(grViolations) > 0:
@@ -311,11 +384,20 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// All checks passed — audit and forward
+	// All checks passed — audit and forward. When guardrails errored
+	// under fail-open policy the request WAS forwarded but guardrails
+	// did NOT actually inspect the prompt; the audit event records
+	// that in its Reason so downstream can distinguish a clean pass
+	// from a pass-during-outage.
+	allowedReason := ""
+	if guardrailsFailedOpen {
+		allowedReason = "guardrails unavailable (allowed by fail-open policy)"
+	}
 	emit(AuditEvent{
 		Model:  req.Model,
 		Tenant: tenant,
 		Action: "allowed",
+		Reason: allowedReason,
 	})
 
 	m.next.ServeHTTP(w, r)
