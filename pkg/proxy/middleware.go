@@ -124,30 +124,54 @@ type OpenAIChatRequest struct {
 	} `json:"messages"`
 }
 
-// NewMiddleware creates a security middleware from a policy spec.
-func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, auditFn func(AuditEvent)) (*Middleware, error) {
+// buildFromPolicy is the single place that turns an InferencePolicySpec
+// into the three policy-derived pieces of middleware state — the
+// prompt checker, the token-bucket rate limiter, and the guardrails
+// client. Both NewMiddleware (startup) and PolicyReloader (hot-reload)
+// route through it so a reload applies the WHOLE policy, not just the
+// checker. Prior to being extracted, reload only rebuilt the checker
+// and silently dropped changes to rateLimits and guardrails_endpoint —
+// an operator raising a rate limit or pointing at a new NeMo endpoint
+// via policy hot-reload got no effect and no warning. Kept as a pure
+// function so it can be tested and reasoned about without middleware
+// state to set up.
+func buildFromPolicy(policy v1alpha1.InferencePolicySpec) (*security.PromptChecker, *security.TokenBucket, *guardrails.Client, error) {
 	checker, err := security.NewPromptChecker(policy.Security)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
-	// Build rate limiter from policy if rate limits are defined
+	// Rate limiter is nil when the policy has no rate limits, so
+	// ServeHTTP's `if rateLimiter != nil` branch stays intact when
+	// hot-reload removes every RateLimits entry. Burst is fixed at 2x
+	// rate — matches the value NewMiddleware used before extraction so
+	// existing tests keep their exact numeric behaviour.
 	var rateLimiter *security.TokenBucket
 	if len(policy.RateLimits) > 0 {
-		// Use the first rate limit's tokens_per_minute as default capacity
 		rateLimiter = security.NewTokenBucket(
 			policy.RateLimits[0].TokensPerMinute,
-			policy.RateLimits[0].TokensPerMinute*2, // burst = 2x rate
+			policy.RateLimits[0].TokensPerMinute*2,
 		)
 	}
 
 	// Optional NeMo Guardrails client — activates when the policy names
-	// an endpoint. Nil otherwise; ServeHTTP checks Available() before use.
+	// an endpoint. Nil when the endpoint is empty, so removing the
+	// endpoint via reload actually disables guardrails, and adding one
+	// enables it. ServeHTTP checks Available() before use.
 	var gr *guardrails.Client
 	if policy.Security.GuardrailsEndpoint != "" {
 		gr = guardrails.NewClient(policy.Security.GuardrailsEndpoint)
 	}
 
+	return checker, rateLimiter, gr, nil
+}
+
+// NewMiddleware creates a security middleware from a policy spec.
+func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, auditFn func(AuditEvent)) (*Middleware, error) {
+	checker, rateLimiter, gr, err := buildFromPolicy(policy)
+	if err != nil {
+		return nil, err
+	}
 	return &Middleware{
 		checker:     checker,
 		policy:      policy,
@@ -271,16 +295,25 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.auditFn(ev)
 	}
 
-	// Acquire read lock for thread-safe checker access (supports hot-reload)
+	// Capture every policy-derived field under one RLock so a hot-reload
+	// firing partway through this handler can't split the request across
+	// two policies (e.g. old checker + new rateLimiter). Reload writes
+	// all four fields together under m.mu.Lock(); we read all four
+	// together under RLock and then use only the locals. rateLimiter and
+	// guardrails used to be read lock-free below on the assumption that
+	// they were set once at startup — no longer true now that reload
+	// rebuilds them.
 	m.mu.RLock()
 	checker := m.checker
 	policy := m.policy
+	rateLimiter := m.rateLimiter
+	gr := m.guardrails
 	m.mu.RUnlock()
 
 	// Check rate limits (token-aware, per tenant)
-	if m.rateLimiter != nil && tenant != "" {
+	if rateLimiter != nil && tenant != "" {
 		estimatedTokens := len(prompt) / 4 // rough estimate: 1 token ≈ 4 chars
-		if !m.rateLimiter.Allow(tenant, estimatedTokens) {
+		if !rateLimiter.Allow(tenant, estimatedTokens) {
 			emit(AuditEvent{
 				Model:  req.Model,
 				Tenant: tenant,
@@ -337,10 +370,10 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ran that never did. Without this signal, an operator asking "did
 	// guardrails inspect this prompt?" sees the same "allowed" record
 	// for the outage window as for a clean pass.
+	//
+	// gr was captured under the top-of-handler RLock along with the
+	// other policy-derived fields; no second RLock needed here.
 	var guardrailsFailedOpen bool
-	m.mu.RLock()
-	gr := m.guardrails
-	m.mu.RUnlock()
 	if gr != nil && gr.Available() {
 		ctx := r.Context()
 		grViolations, grErr := gr.Check(ctx, prompt, map[string]string{"tenant": tenant, "model": req.Model})

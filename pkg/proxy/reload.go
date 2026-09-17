@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/amayabdaniel/modelgate/api/v1alpha1"
-	"github.com/amayabdaniel/modelgate/pkg/security"
 	"gopkg.in/yaml.v3"
 )
 
@@ -97,15 +96,24 @@ func (pr *PolicyReloader) checkAndReload() error {
 		return fmt.Errorf("validating %s: %w", pr.filePath, err)
 	}
 
-	checker, err := security.NewPromptChecker(policy.Security)
+	checker, rateLimiter, gr, err := buildFromPolicy(policy)
 	if err != nil {
-		return fmt.Errorf("creating checker: %w", err)
+		return fmt.Errorf("building policy state: %w", err)
 	}
 
-	// Swap the checker in the middleware
+	// Swap ALL policy-derived state atomically under the same write lock
+	// ServeHTTP takes a read lock on when it captures those fields, so
+	// a request that started before this swap uses the entirely-old
+	// state and one that started after uses the entirely-new state —
+	// never a mixture like old checker with new rateLimiter. rateLimiter
+	// and guardrails used to be omitted from this swap, so a policy
+	// change to rateLimits or guardrails_endpoint was silently a no-op
+	// until process restart.
 	pr.middleware.mu.Lock()
 	pr.middleware.checker = checker
 	pr.middleware.policy = policy
+	pr.middleware.rateLimiter = rateLimiter
+	pr.middleware.guardrails = gr
 	pr.middleware.mu.Unlock()
 
 	pr.mu.Lock()
