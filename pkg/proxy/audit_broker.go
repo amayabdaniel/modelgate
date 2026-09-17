@@ -39,9 +39,19 @@ type AuditBroker struct {
 // AuditSubscription is one consumer's view into the broker. The Events
 // channel is the read side; the consumer must drain it or accept that
 // over-quota events are dropped (Dropped() reports the running count).
+//
+// Membership in a broker is tracked exclusively by the broker's own
+// subs map, guarded by AuditBroker.mu — the subscription itself carries
+// no back-pointer. A prior design cached the owning broker on the
+// subscription as a lock-free fast path for redundant Unsubscribe
+// calls; that read raced with Close's write under -race (a real bug,
+// not just detector noise: Close and a defer-Unsubscribe on shutdown
+// touch the same field with no synchronization). Removing the field
+// makes redundant-unsubscribe cost one map lookup under the lock
+// instead of a lock-free branch, which is orders of magnitude below
+// the SSE fan-out cost that dominates this path.
 type AuditSubscription struct {
 	Events chan AuditEvent
-	broker *AuditBroker
 
 	dropped atomic.Int64
 }
@@ -68,15 +78,17 @@ func (b *AuditBroker) Subscribe(bufferSize int) *AuditSubscription {
 		close(sub.Events)
 		return sub
 	}
-	sub.broker = b
 	b.subs[sub] = struct{}{}
 	return sub
 }
 
 // Unsubscribe removes the subscription and closes its channel. Safe to
-// call multiple times; redundant calls are no-ops.
+// call multiple times and safe on a subscription that came back from a
+// post-Close Subscribe: the lookup on b.subs is the sole source of
+// truth for "still active" and returns cleanly when the entry is
+// absent, so double-close of the channel is impossible.
 func (b *AuditBroker) Unsubscribe(sub *AuditSubscription) {
-	if sub == nil || sub.broker == nil {
+	if sub == nil {
 		return
 	}
 	b.mu.Lock()
@@ -86,7 +98,6 @@ func (b *AuditBroker) Unsubscribe(sub *AuditSubscription) {
 	}
 	delete(b.subs, sub)
 	close(sub.Events)
-	sub.broker = nil
 }
 
 // Publish delivers an event to all subscribers. Subscribers with full
@@ -122,7 +133,6 @@ func (b *AuditBroker) Close() {
 	b.closed = true
 	for sub := range b.subs {
 		close(sub.Events)
-		sub.broker = nil
 	}
 	b.subs = map[*AuditSubscription]struct{}{}
 }
