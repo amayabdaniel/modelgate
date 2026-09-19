@@ -1,9 +1,9 @@
 module github.com/amayabdaniel/modelgate
 
-go 1.22.0
+go 1.25.0
 
 require (
-	golang.org/x/text v0.21.0
+	golang.org/x/text v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.31.0
 	k8s.io/apimachinery v0.31.0
