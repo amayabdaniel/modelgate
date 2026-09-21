@@ -144,15 +144,67 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 		envVars = append(envVars, env)
 	}
 
+	// Resource requests+limits. GPU is set from NIMService.Spec (an
+	// operator knob). CPU + memory are REQUESTS ONLY here — no LIMITS
+	// — because NIMService.Spec has no CPU/memory tuning knobs yet
+	// (adding one is a CRD schema change scoped as follow-up), and a
+	// hardcoded CPU/memory LIMIT would throttle or OOMKill some
+	// legitimate NIM workloads. Requests give the scheduler headroom
+	// so a runaway pod can't starve every co-tenant on the node;
+	// bursting above the request stays possible on pressure. This is
+	// a Burstable-QoS shape by design. When NIMService.Spec gains CPU
+	// and Memory fields the LIMITS branch should land alongside them.
 	resources := corev1.ResourceRequirements{
 		Limits: corev1.ResourceList{
 			"nvidia.com/gpu": *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
 		},
 		Requests: corev1.ResourceList{
 			"nvidia.com/gpu": *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
 	}
 
+	// Pod- and container-level hardening. This is a FIRST SLICE — the
+	// defaults added here are the ones safe to apply without a
+	// NIMService.Spec extension:
+	//
+	//   Pod:
+	//     - runAsNonRoot: true — kubelet rejects pods whose image
+	//       USER is 0. NVIDIA NIM images ship as a non-root user, so
+	//       this passes for the intended catalogue and surfaces
+	//       misconfigured or hand-built root images loudly instead of
+	//       silently.
+	//     - seccompProfile: RuntimeDefault — required for
+	//       PodSecurityStandards restricted profile admission.
+	//     - automountServiceAccountToken: false — NIM inference pods
+	//       do not call the Kubernetes API; mounting the SA token is
+	//       an exfiltration surface for a jailbroken workload.
+	//
+	//   Container:
+	//     - allowPrivilegeEscalation: false — no setuid path to root.
+	//     - capabilities.drop [ALL] — NIM needs no Linux capabilities.
+	//
+	// EXPLICITLY NOT included in this slice (recorded so a reader
+	// does not walk away thinking the rendered pod is fully
+	// hardened):
+	//
+	//   - readOnlyRootFilesystem — NIM binaries write to caches
+	//     inside the image; enabling this requires an emptyDir
+	//     volume mount plan the CRD does not describe yet.
+	//   - runAsUser (explicit UID) — NIM images set their own USER;
+	//     forcing an override may break the image's own filesystem
+	//     assumptions.
+	//   - CPU/memory LIMITS — no operator knob; see resources note.
+	//   - Per-NIMService NetworkPolicy — governance concern layered
+	//     at aigov chart level, not renderable here.
+	//
+	// Follow-up ticket: extend NIMService.Spec with a SecurityContext
+	// passthrough + Resources block so operators can override these
+	// defaults per workload, then land readOnlyRootFilesystem behind
+	// that override.
+	nonRoot := true
+	noPrivEsc := false
 	replicas := d.Replicas
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -171,6 +223,13 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 					Labels: mergeLabels(labels, map[string]string{"app.kubernetes.io/name": d.Name}),
 				},
 				Spec: corev1.PodSpec{
+					AutomountServiceAccountToken: &noPrivEsc, // false
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &nonRoot,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{{
 						Name:      "nim",
 						Image:     d.Image,
@@ -181,6 +240,12 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 							ContainerPort: d.Port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: &noPrivEsc,
+							Capabilities: &corev1.Capabilities{
+								Drop: []corev1.Capability{"ALL"},
+							},
+						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{

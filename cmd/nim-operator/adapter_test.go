@@ -67,6 +67,90 @@ func TestRenderDeploymentBasics(t *testing.T) {
 	}
 }
 
+// TestRenderDeploymentHardeningDefaults locks in the first-slice
+// pod/container hardening defaults renderDeployment applies. This is
+// a governance product; a pod spec that ships with no securityContext
+// or resource requests is an availability problem in its own right,
+// and the CRIT-severity finding peer flagged. The defaults asserted
+// here are the ones safe to apply without a NIMService.Spec extension.
+// Explicit-not-included items (readOnlyRootFilesystem, runAsUser,
+// CPU/memory limits, per-NIMService NetworkPolicy) are recorded in the
+// renderDeployment comment as follow-up scope.
+//
+// This test would fail on the pre-slice adapter and pins the shape
+// against silent regressions of any single knob.
+func TestRenderDeploymentHardeningDefaults(t *testing.T) {
+	d := &controller.Deployment{
+		Name:       "llama3-8b",
+		Namespace:  "nim",
+		Image:      "nvcr.io/nim/meta/llama3-8b:1.0.0",
+		Replicas:   1,
+		GPURequest: 1,
+		Port:       8000,
+	}
+
+	got := renderDeployment(d)
+	pod := got.Spec.Template.Spec
+
+	// Pod: automountServiceAccountToken must be false — NIM does not
+	// call the K8s API, and mounting the SA token is an exfiltration
+	// surface for a jailbroken workload.
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Errorf("PodSpec.AutomountServiceAccountToken must be explicitly false, got %v", pod.AutomountServiceAccountToken)
+	}
+	// Pod: runAsNonRoot must be true — kubelet rejects a root-USER
+	// image, surfacing misconfigured images loudly.
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+		t.Errorf("PodSecurityContext.RunAsNonRoot must be true, got %+v", pod.SecurityContext)
+	}
+	// Pod: seccompProfile RuntimeDefault — PodSecurityStandards
+	// restricted profile admission requires this.
+	if pod.SecurityContext == nil || pod.SecurityContext.SeccompProfile == nil || pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("PodSecurityContext.SeccompProfile.Type must be RuntimeDefault, got %+v", pod.SecurityContext)
+	}
+
+	if len(pod.Containers) != 1 {
+		t.Fatalf("expected 1 container, got %d", len(pod.Containers))
+	}
+	c := pod.Containers[0]
+
+	// Container: allowPrivilegeEscalation must be false — no setuid
+	// path to root.
+	if c.SecurityContext == nil || c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
+		t.Errorf("Container.SecurityContext.AllowPrivilegeEscalation must be explicitly false, got %+v", c.SecurityContext)
+	}
+	// Container: capabilities.drop must include ALL — NIM needs no
+	// Linux capabilities.
+	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil {
+		t.Fatalf("Container.SecurityContext.Capabilities must be set, got %+v", c.SecurityContext)
+	}
+	dropped := c.SecurityContext.Capabilities.Drop
+	foundAll := false
+	for _, cap := range dropped {
+		if cap == "ALL" {
+			foundAll = true
+		}
+	}
+	if !foundAll {
+		t.Errorf("Container.SecurityContext.Capabilities.Drop must contain ALL, got %v", dropped)
+	}
+
+	// Resources: CPU + memory REQUESTS present (defensive scheduling
+	// headroom). LIMITS deliberately absent for CPU/memory pending a
+	// NIMService.Spec knob — see renderDeployment comment. Test asserts
+	// requests to prevent them being accidentally dropped; does not
+	// assert the absence of limits, since a future PR adding LIMITS
+	// behind a Spec extension is a valid change, not a regression.
+	cpuReq := c.Resources.Requests[corev1.ResourceCPU]
+	if cpuReq.IsZero() {
+		t.Errorf("Container.Resources.Requests[cpu] must be set (defensive scheduling headroom), got zero")
+	}
+	memReq := c.Resources.Requests[corev1.ResourceMemory]
+	if memReq.IsZero() {
+		t.Errorf("Container.Resources.Requests[memory] must be set (defensive scheduling headroom), got zero")
+	}
+}
+
 func TestRenderDeploymentOwnerReference(t *testing.T) {
 	d := &controller.Deployment{
 		Name:      "llama3-8b",

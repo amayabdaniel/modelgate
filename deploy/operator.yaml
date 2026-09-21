@@ -100,9 +100,23 @@ spec:
           type: RuntimeDefault
       containers:
         - name: manager
-          # Replace with a real registry path once the image is published.
-          image: ghcr.io/amayabdaniel/nim-operator:latest
-          imagePullPolicy: IfNotPresent
+          # Set this to a specific, published image before `kubectl apply`.
+          # Do NOT deploy with a moving tag like :latest — a rolling tag
+          # lets the container host silently ship a different operator
+          # binary on pod restart, defeats image-signing, and breaks
+          # reproducible incident forensics. Prefer an immutable digest
+          # (@sha256:...) over a version tag. The placeholder tag below
+          # is deliberately obvious so an operator can't miss it: it
+          # will fail image pull loudly instead of silently pulling
+          # whatever :latest happens to point at today. Same pattern
+          # gpucast's Helm chart enforces via `required` — same intent
+          # in raw YAML.
+          image: ghcr.io/amayabdaniel/nim-operator:v0.0.0-EDIT-BEFORE-APPLY
+          # Always pull as defence-in-depth: if a moving tag slips
+          # through this default despite the comment, every pod restart
+          # re-pulls from the registry rather than reusing whatever
+          # binary the node happens to have cached.
+          imagePullPolicy: Always
           args:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
