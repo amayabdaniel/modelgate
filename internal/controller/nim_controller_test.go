@@ -207,12 +207,12 @@ func TestDerivePhase_KnownGoodCases(t *testing.T) {
 		desired, ready int32
 		want           string
 	}{
-		{desired: 3, ready: 3, want: "Ready"},          // healthy steady-state
-		{desired: 3, ready: 0, want: "Pending"},        // cold start
-		{desired: 3, ready: 1, want: "Progressing"},    // scaling up
-		{desired: 0, ready: 0, want: "Ready"},          // intentional scale-to-zero, quiesced
-		{desired: 0, ready: 3, want: "Progressing"},    // scale-to-zero in flight
-		{desired: 2, ready: 5, want: "Progressing"},    // scale-down in flight
+		{desired: 3, ready: 3, want: "Ready"},       // healthy steady-state
+		{desired: 3, ready: 0, want: "Pending"},     // cold start
+		{desired: 3, ready: 1, want: "Progressing"}, // scaling up
+		{desired: 0, ready: 0, want: "Ready"},       // intentional scale-to-zero, quiesced
+		{desired: 0, ready: 3, want: "Progressing"}, // scale-to-zero in flight
+		{desired: 2, ready: 5, want: "Progressing"}, // scale-down in flight
 	}
 	for _, tc := range cases {
 		if got := derivePhase(tc.desired, tc.ready); got != tc.want {

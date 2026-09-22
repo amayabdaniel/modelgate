@@ -18,7 +18,7 @@ type InferencePolicySpec struct {
 }
 
 type TenantBudget struct {
-	Tenant         string  `yaml:"tenant" json:"tenant"`
+	Tenant          string  `yaml:"tenant" json:"tenant"`
 	MonthlyLimitUSD float64 `yaml:"monthly_limit_usd" json:"monthly_limit_usd"`
 	AlertAtPercent  int     `yaml:"alert_at_percent,omitempty" json:"alert_at_percent,omitempty"`
 }
@@ -51,9 +51,9 @@ type RoutingRule struct {
 }
 
 type RateLimit struct {
-	Tenant         string `yaml:"tenant,omitempty" json:"tenant,omitempty"`
-	TokensPerMinute int    `yaml:"tokens_per_minute" json:"tokens_per_minute"`
-	RequestsPerMinute int  `yaml:"requests_per_minute,omitempty" json:"requests_per_minute,omitempty"`
+	Tenant            string `yaml:"tenant,omitempty" json:"tenant,omitempty"`
+	TokensPerMinute   int    `yaml:"tokens_per_minute" json:"tokens_per_minute"`
+	RequestsPerMinute int    `yaml:"requests_per_minute,omitempty" json:"requests_per_minute,omitempty"`
 }
 
 // Validate checks the policy spec for correctness.

@@ -7,10 +7,12 @@
 // Reconciler shape via kubeReconciler.
 //
 // Build with:
-//   go build -tags k8s -o bin/nim-operator ./cmd/nim-operator
+//
+//	go build -tags k8s -o bin/nim-operator ./cmd/nim-operator
 //
 // Run in-cluster:
-//   ./bin/nim-operator
+//
+//	./bin/nim-operator
 //
 // The default build of modelgate (proxy binary) omits everything in
 // this directory — no k8s deps in the proxy container.

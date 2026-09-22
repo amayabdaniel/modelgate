@@ -23,9 +23,9 @@ import (
 // roughly 30 seconds at 30 audit events/sec, enough for an SSE client
 // to recover from a transient slow read.
 type AuditBroker struct {
-	mu      sync.RWMutex
-	subs    map[*AuditSubscription]struct{}
-	closed  bool
+	mu     sync.RWMutex
+	subs   map[*AuditSubscription]struct{}
+	closed bool
 
 	// totalDropped is a broker-lifetime counter, unlike each
 	// AuditSubscription's own dropped tally: a subscription's counter is

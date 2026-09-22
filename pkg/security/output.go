@@ -46,9 +46,9 @@ func ScanOutput(output string) []OutputViolation {
 
 	// Check for dangerous content patterns
 	dangerousPatterns := map[string]string{
-		`(?i)(sudo|chmod\s+777|rm\s+-rf\s+/)`:                   "dangerous_command",
-		`(?i)(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)`:              "sql_injection",
-		`(?i)(<script|javascript:|on\w+\s*=)`:                    "xss_content",
+		`(?i)(sudo|chmod\s+777|rm\s+-rf\s+/)`:       "dangerous_command",
+		`(?i)(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)`: "sql_injection",
+		`(?i)(<script|javascript:|on\w+\s*=)`:       "xss_content",
 	}
 	for pattern, rule := range dangerousPatterns {
 		re := regexp.MustCompile(pattern)
@@ -115,12 +115,12 @@ func ContainsSecrets(text string) bool {
 // MaskSecrets replaces detected secrets with placeholders.
 func MaskSecrets(text string) string {
 	replacements := map[string]string{
-		`(?i)(api[_-]?key|apikey)\s*[=:]\s*\S+`:     "$1=[REDACTED]",
+		`(?i)(api[_-]?key|apikey)\s*[=:]\s*\S+`:         "$1=[REDACTED]",
 		`(?i)(secret|password|passwd|pwd)\s*[=:]\s*\S+`: "$1=[REDACTED]",
-		`(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*`:      "${1}[REDACTED]",
-		`(?i)ghp_[A-Za-z0-9]{36}`:                    "[GITHUB_TOKEN_REDACTED]",
-		`(?i)sk-[A-Za-z0-9]{48}`:                     "[OPENAI_KEY_REDACTED]",
-		`AKIA[0-9A-Z]{16}`:                           "[AWS_KEY_REDACTED]",
+		`(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*`:          "${1}[REDACTED]",
+		`(?i)ghp_[A-Za-z0-9]{36}`:                       "[GITHUB_TOKEN_REDACTED]",
+		`(?i)sk-[A-Za-z0-9]{48}`:                        "[OPENAI_KEY_REDACTED]",
+		`AKIA[0-9A-Z]{16}`:                              "[AWS_KEY_REDACTED]",
 	}
 
 	result := text

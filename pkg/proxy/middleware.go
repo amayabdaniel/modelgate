@@ -67,22 +67,22 @@ type Middleware struct {
 //
 // Action values:
 //   - "allowed"     — all configured checks ran and none fired. Reason
-//                     may still be set to note a non-terminal event
-//                     (e.g. guardrails unavailable under fail-open
-//                     policy — the request was forwarded, but the audit
-//                     trail records that guardrails did NOT run).
+//     may still be set to note a non-terminal event
+//     (e.g. guardrails unavailable under fail-open
+//     policy — the request was forwarded, but the audit
+//     trail records that guardrails did NOT run).
 //   - "blocked"     — a check fired and the request never reached the
-//                     upstream; Violations describes what fired.
+//     upstream; Violations describes what fired.
 //   - "passthrough" — the middleware could not inspect this request
-//                     (non-POST verb, unparseable body, non-chat schema)
-//                     but it DID reach the upstream. Emitted so the
-//                     audit trail never silently omits a request that
-//                     hit the LLM — a compliance claim of the form "we
-//                     can prove what went through" depends on the floor
-//                     that every request either was audited here or was
-//                     rejected here. Downstream consumers of the audit
-//                     stream (gpudab AuditConsumer) count these as
-//                     Requests but neither Allowed nor Blocked.
+//     (non-POST verb, unparseable body, non-chat schema)
+//     but it DID reach the upstream. Emitted so the
+//     audit trail never silently omits a request that
+//     hit the LLM — a compliance claim of the form "we
+//     can prove what went through" depends on the floor
+//     that every request either was audited here or was
+//     rejected here. Downstream consumers of the audit
+//     stream (gpudab AuditConsumer) count these as
+//     Requests but neither Allowed nor Blocked.
 type AuditEvent struct {
 	Model               string               `json:"model"`
 	Tenant              string               `json:"tenant"`

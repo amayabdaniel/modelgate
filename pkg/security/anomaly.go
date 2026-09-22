@@ -8,29 +8,29 @@ import (
 // PromptProfile tracks "normal" prompt behavior per tenant for anomaly detection.
 // Builds a statistical profile of prompt characteristics and flags deviations.
 type PromptProfile struct {
-	mu       sync.RWMutex
-	profiles map[string]*tenantProfile
+	mu         sync.RWMutex
+	profiles   map[string]*tenantProfile
 	minSamples int
 }
 
 type tenantProfile struct {
-	count         int
-	sumLength     float64
-	sumLengthSq   float64
-	sumWordCount  float64
-	sumWordCountSq float64
-	maxLength     int
+	count           int
+	sumLength       float64
+	sumLengthSq     float64
+	sumWordCount    float64
+	sumWordCountSq  float64
+	maxLength       int
 	lastAlertLength int
 }
 
 // AnomalyResult describes a detected prompt anomaly.
 type AnomalyResult struct {
-	IsAnomaly   bool
-	Score       float64 // standard deviations from mean
-	Reason      string
+	IsAnomaly    bool
+	Score        float64 // standard deviations from mean
+	Reason       string
 	PromptLength int
-	MeanLength  float64
-	StdDev      float64
+	MeanLength   float64
+	StdDev       float64
 }
 
 // NewPromptProfile creates an anomaly detector.
@@ -82,7 +82,7 @@ func (pp *PromptProfile) Observe(tenant, prompt string) AnomalyResult {
 		stddev = 1 // prevent division by zero for uniform prompts
 	}
 
-	zscore := math.Abs(float64(length) - mean) / stddev
+	zscore := math.Abs(float64(length)-mean) / stddev
 
 	result := AnomalyResult{
 		PromptLength: length,

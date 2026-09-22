@@ -13,13 +13,13 @@ import (
 
 // PolicyReloader watches a policy file and reloads the middleware checker on changes.
 type PolicyReloader struct {
-	mu         sync.RWMutex
-	filePath   string
+	mu          sync.RWMutex
+	filePath    string
 	lastModTime time.Time
-	lastSize   int64
-	middleware *Middleware
-	interval   time.Duration
-	stopCh     chan struct{}
+	lastSize    int64
+	middleware  *Middleware
+	interval    time.Duration
+	stopCh      chan struct{}
 	reloadCount int
 }
 

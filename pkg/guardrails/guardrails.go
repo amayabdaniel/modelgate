@@ -40,8 +40,8 @@ type CheckRequest struct {
 
 // CheckResponse is the payload the endpoint returns.
 type CheckResponse struct {
-	Allowed bool                `json:"allowed"`
-	Reasons []CheckReason       `json:"reasons,omitempty"`
+	Allowed bool          `json:"allowed"`
+	Reasons []CheckReason `json:"reasons,omitempty"`
 }
 
 // CheckReason identifies one Colang rail that fired.

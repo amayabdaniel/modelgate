@@ -15,8 +15,8 @@ type Generic struct {
 	target *url.URL
 }
 
-func (g *Generic) Name() string       { return g.name }
-func (g *Generic) Target() *url.URL   { return g.target }
+func (g *Generic) Name() string                 { return g.name }
+func (g *Generic) Target() *url.URL             { return g.target }
 func (g *Generic) PrepareRequest(*http.Request) {}
 
 func (g *Generic) HealthCheck(ctx context.Context, client *http.Client) error {

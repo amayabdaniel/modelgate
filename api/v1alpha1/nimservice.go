@@ -13,11 +13,11 @@ import "fmt"
 // wiring behind a build tag; the Spec/Status shapes here are
 // deliberately identical to what that CRD will declare.
 type NIMService struct {
-	Kind       string            `json:"kind,omitempty"`
-	APIVersion string            `json:"apiVersion,omitempty"`
-	Metadata   ObjectMeta        `json:"metadata"`
-	Spec       NIMServiceSpec    `json:"spec"`
-	Status     NIMServiceStatus  `json:"status,omitempty"`
+	Kind       string           `json:"kind,omitempty"`
+	APIVersion string           `json:"apiVersion,omitempty"`
+	Metadata   ObjectMeta       `json:"metadata"`
+	Spec       NIMServiceSpec   `json:"spec"`
+	Status     NIMServiceStatus `json:"status,omitempty"`
 }
 
 // ObjectMeta mirrors the subset of k8s.io/apimachinery/pkg/apis/meta/v1

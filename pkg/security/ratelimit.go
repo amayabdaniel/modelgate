@@ -9,7 +9,7 @@ import (
 type TokenBucket struct {
 	mu       sync.Mutex
 	buckets  map[string]*bucket
-	rate     int     // tokens per refill
+	rate     int // tokens per refill
 	interval time.Duration
 	capacity int
 }

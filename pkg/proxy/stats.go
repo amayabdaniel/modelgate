@@ -12,11 +12,11 @@ import (
 type Stats struct {
 	mu sync.RWMutex
 
-	StartedAt  time.Time
-	TotalRequests    atomic.Int64
-	AllowedRequests  atomic.Int64
-	BlockedRequests  atomic.Int64
-	RateLimited      atomic.Int64
+	StartedAt       time.Time
+	TotalRequests   atomic.Int64
+	AllowedRequests atomic.Int64
+	BlockedRequests atomic.Int64
+	RateLimited     atomic.Int64
 
 	// Provider identity (e.g. "generic", "nim") — reported in /stats so
 	// dashboards can tell which upstream is being proxied without having
@@ -60,17 +60,17 @@ type TenantStats struct {
 
 // StatsResponse is the JSON response from /stats.
 type StatsResponse struct {
-	Uptime           string                       `json:"uptime"`
-	Provider         string                       `json:"provider,omitempty"`
-	Backend          string                       `json:"backend,omitempty"`
-	TotalRequests    int64                        `json:"total_requests"`
-	AllowedRequests  int64                        `json:"allowed_requests"`
-	BlockedRequests  int64                        `json:"blocked_requests"`
-	RateLimited      int64                        `json:"rate_limited"`
-	BlockRate        float64                      `json:"block_rate_percent"`
-	Tenants          map[string]TenantStatsJSON   `json:"tenants"`
-	ViolationCounts  map[string]int64             `json:"violation_counts"`
-	AuditStream      *AuditStreamStats            `json:"audit_stream,omitempty"`
+	Uptime          string                     `json:"uptime"`
+	Provider        string                     `json:"provider,omitempty"`
+	Backend         string                     `json:"backend,omitempty"`
+	TotalRequests   int64                      `json:"total_requests"`
+	AllowedRequests int64                      `json:"allowed_requests"`
+	BlockedRequests int64                      `json:"blocked_requests"`
+	RateLimited     int64                      `json:"rate_limited"`
+	BlockRate       float64                    `json:"block_rate_percent"`
+	Tenants         map[string]TenantStatsJSON `json:"tenants"`
+	ViolationCounts map[string]int64           `json:"violation_counts"`
+	AuditStream     *AuditStreamStats          `json:"audit_stream,omitempty"`
 }
 
 // TenantStatsJSON is the per-tenant JSON shape.

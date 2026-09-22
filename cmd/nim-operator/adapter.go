@@ -159,7 +159,7 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 			"nvidia.com/gpu": *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
 		},
 		Requests: corev1.ResourceList{
-			"nvidia.com/gpu": *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
+			"nvidia.com/gpu":      *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
 			corev1.ResourceCPU:    resource.MustParse("500m"),
 			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
