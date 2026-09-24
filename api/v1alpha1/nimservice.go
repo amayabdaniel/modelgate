@@ -64,6 +64,65 @@ type NIMServiceSpec struct {
 
 	// Port is the HTTP port the NIM pod listens on. Defaults to 8000.
 	Port int32 `json:"port,omitempty"`
+
+	// Resources tunes CPU and memory requests + limits. When nil, the
+	// adapter falls back to its built-in defaults (CPU 500m + memory
+	// 2Gi as REQUESTS ONLY, no CPU/memory LIMITS, GPU limit stays at
+	// GPURequest). When set, empty fields keep those defaults; only
+	// specified values override. This is the operator knob the Tuesday
+	// hardening slice explicitly left as follow-up because a hardcoded
+	// CPU/memory LIMIT would throttle or OOMKill some workloads.
+	Resources *NIMServiceResources `json:"resources,omitempty"`
+
+	// ReadOnlyRootFilesystem opts the rendered container into a
+	// read-only root filesystem. Off by default because NIM images
+	// write to caches inside the image and per-image testing is
+	// required to know which paths need writable mounts (which is why
+	// Tuesday's slice explicitly did NOT default this on). When true,
+	// WritableMounts declares the paths that stay writable via
+	// per-path emptyDir volumes.
+	ReadOnlyRootFilesystem bool `json:"readOnlyRootFilesystem,omitempty"`
+
+	// WritableMounts is the list of paths that stay writable when
+	// ReadOnlyRootFilesystem is true. Each path becomes an emptyDir
+	// volume mounted at that location.
+	//
+	// Default when ReadOnlyRootFilesystem=true and the list is empty:
+	// ["/tmp"]. This default is a guess based on the general NIM shape
+	// and HAS NOT BEEN VERIFIED against a specific image; NIM images
+	// commonly write elsewhere too (/var/cache, /root/.cache, model
+	// download directories). An operator who flips the switch and
+	// discovers their image needs additional paths adds them to this
+	// list in the NIMService CR rather than filing a bug against the
+	// operator. Document your image's actual write set before relying
+	// on the default.
+	WritableMounts []string `json:"writableMounts,omitempty"`
+}
+
+// NIMServiceResources tunes container CPU + memory requests and limits.
+// Mirrors the shape of corev1.ResourceRequirements at a plain-Go level
+// so the reconciler stays k8s-free — the adapter parses these strings
+// through resource.MustParse at render time.
+type NIMServiceResources struct {
+	// Requests are the guaranteed reservations the scheduler honours.
+	Requests *NIMServiceResourceList `json:"requests,omitempty"`
+
+	// Limits are the hard ceilings enforced by the kubelet. When nil,
+	// the container is Burstable — it can grow past its Requests up
+	// to the node's spare capacity. Set when the operator has verified
+	// their workload's ceiling and wants OOMKill / throttle at that
+	// bound rather than at node exhaustion.
+	Limits *NIMServiceResourceList `json:"limits,omitempty"`
+}
+
+// NIMServiceResourceList is the CPU + memory pair inside Requests /
+// Limits. Strings so the operator writes k8s-native quantities
+// ("500m", "2Gi") that the adapter parses via resource.MustParse.
+// Empty fields fall back to the adapter's built-in defaults for
+// Requests; empty Limits fields mean "no ceiling on this dimension."
+type NIMServiceResourceList struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
 }
 
 // NIMServiceStatus reflects the observed state reconciled by the controller.

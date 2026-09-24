@@ -19,6 +19,12 @@ import (
 // Deployment is the subset of apps/v1 Deployment fields the controller
 // owns. Anything the reconciler doesn't set (e.g. strategy, selectors
 // beyond name) is the cluster's concern.
+//
+// String-typed resource quantities (CPURequest, MemoryRequest,
+// CPULimit, MemoryLimit) keep this struct free of k8s types; the
+// adapter parses them via resource.MustParse. Empty = use adapter
+// defaults for the *Request fields, and "no ceiling" for the *Limit
+// fields.
 type Deployment struct {
 	Name       string
 	Namespace  string
@@ -33,6 +39,27 @@ type Deployment struct {
 	// stripped, with the same key as the env var. The real adapter
 	// translates these into `EnvVarSource.SecretKeyRef`.
 	Env map[string]string
+
+	// Resource overrides. Empty = adapter default:
+	//   CPURequest    "500m"    (Tuesday hardening default)
+	//   MemoryRequest "2Gi"     (Tuesday hardening default)
+	//   CPULimit      ""        no CPU limit
+	//   MemoryLimit   ""        no memory limit
+	CPURequest    string
+	MemoryRequest string
+	CPULimit      string
+	MemoryLimit   string
+
+	// ReadOnlyRootFilesystem opts the container into a read-only root
+	// filesystem. Off by default (Tuesday hardening slice explicitly
+	// did NOT default this on — per-image write-path testing needed).
+	// When on, WritableMounts declares emptyDir paths that stay writable.
+	ReadOnlyRootFilesystem bool
+
+	// WritableMounts is the list of paths mounted as emptyDir when
+	// ReadOnlyRootFilesystem is true. Empty list with RO=true → adapter
+	// defaults to ["/tmp"] as an unverified NIM-shape guess.
+	WritableMounts []string
 
 	// ObservedReadyReplicas is filled in by the Client on GetDeployment.
 	// Reconcile() leaves it untouched when planning desired state.
@@ -143,17 +170,30 @@ func BuildDeployment(svc *v1alpha1.NIMService) *Deployment {
 		env["NGC_API_KEY"] = "secret:" + svc.Spec.NGCSecretName
 	}
 
-	return &Deployment{
-		Name:       svc.Metadata.Name,
-		Namespace:  svc.Metadata.Namespace,
-		Labels:     labels,
-		Image:      svc.Spec.Image,
-		Replicas:   svc.Spec.DesiredReplicas(),
-		GPURequest: svc.Spec.GPURequest,
-		Port:       svc.Spec.Port,
-		Env:        env,
-		OwnerUID:   svc.Metadata.UID,
+	d := &Deployment{
+		Name:                   svc.Metadata.Name,
+		Namespace:              svc.Metadata.Namespace,
+		Labels:                 labels,
+		Image:                  svc.Spec.Image,
+		Replicas:               svc.Spec.DesiredReplicas(),
+		GPURequest:             svc.Spec.GPURequest,
+		Port:                   svc.Spec.Port,
+		Env:                    env,
+		OwnerUID:               svc.Metadata.UID,
+		ReadOnlyRootFilesystem: svc.Spec.ReadOnlyRootFilesystem,
+		WritableMounts:         svc.Spec.WritableMounts,
 	}
+	if r := svc.Spec.Resources; r != nil {
+		if r.Requests != nil {
+			d.CPURequest = r.Requests.CPU
+			d.MemoryRequest = r.Requests.Memory
+		}
+		if r.Limits != nil {
+			d.CPULimit = r.Limits.CPU
+			d.MemoryLimit = r.Limits.Memory
+		}
+	}
+	return d
 }
 
 // derivePhase summarizes the reconcile state for `kubectl get`.

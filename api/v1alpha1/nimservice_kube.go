@@ -51,12 +51,30 @@ func (in *KubeNIMService) DeepCopyInto(out *KubeNIMService) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	// Spec/Status are value types with no reference fields (see
-	// nimservice.go). Direct copy is safe; Conditions is a slice that
-	// needs its own copy.
+	// Every Spec pointer / slice field needs an explicit deep copy so
+	// mutations on the returned KubeNIMService don't leak back into
+	// the shared cache. Add-here-when-you-add-a-Spec-field is the
+	// invariant this block encodes; the round-trip test in
+	// nimservice_kube_test.go guards it.
 	if in.Spec.Replicas != nil {
 		r := *in.Spec.Replicas
 		out.Spec.Replicas = &r
+	}
+	if in.Spec.Resources != nil {
+		r := *in.Spec.Resources
+		if in.Spec.Resources.Requests != nil {
+			req := *in.Spec.Resources.Requests
+			r.Requests = &req
+		}
+		if in.Spec.Resources.Limits != nil {
+			lim := *in.Spec.Resources.Limits
+			r.Limits = &lim
+		}
+		out.Spec.Resources = &r
+	}
+	if in.Spec.WritableMounts != nil {
+		out.Spec.WritableMounts = make([]string, len(in.Spec.WritableMounts))
+		copy(out.Spec.WritableMounts, in.Spec.WritableMounts)
 	}
 	if in.Status.Conditions != nil {
 		out.Status.Conditions = make([]Condition, len(in.Status.Conditions))

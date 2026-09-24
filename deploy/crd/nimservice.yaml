@@ -102,6 +102,66 @@ spec:
                   description: >-
                     HTTP port the NIM container listens on. Defaults
                     to 8000. Used as the readiness-probe target.
+                resources:
+                  type: object
+                  description: >-
+                    CPU + memory requests and limits. Additive optional
+                    field: unset → adapter defaults (CPU 500m + memory
+                    2Gi as REQUESTS ONLY, no CPU/memory LIMITS —
+                    Burstable QoS by design). Empty sub-fields keep
+                    those defaults; only specified values override.
+                    NOTE — this schema is hand-maintained alongside the
+                    Go types in api/v1alpha1/nimservice.go; keep the
+                    two in lockstep.
+                  properties:
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          description: >-
+                            CPU request (e.g. "500m", "2"). Empty →
+                            adapter default 500m.
+                        memory:
+                          type: string
+                          description: >-
+                            Memory request (e.g. "2Gi"). Empty →
+                            adapter default 2Gi.
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          description: >-
+                            CPU limit. Empty → no CPU ceiling (pod is
+                            Burstable). Set only when a specific
+                            workload's ceiling has been verified.
+                        memory:
+                          type: string
+                          description: >-
+                            Memory limit. Empty → no memory ceiling.
+                readOnlyRootFilesystem:
+                  type: boolean
+                  description: >-
+                    Opt-in to a read-only container root filesystem.
+                    Off by default because NIM images write to caches
+                    inside the image and per-image testing is required
+                    to know which paths need writable mounts. When
+                    true, writableMounts declares the emptyDir volumes.
+                writableMounts:
+                  type: array
+                  items:
+                    type: string
+                  description: >-
+                    Paths that stay writable when
+                    readOnlyRootFilesystem is true. Each path becomes
+                    an emptyDir volume. Default when the list is empty
+                    and readOnlyRootFilesystem is on: ["/tmp"]. That
+                    default is a GUESS based on the general NIM shape
+                    and HAS NOT BEEN VERIFIED against a specific
+                    image; NIM images commonly write elsewhere too
+                    (/var/cache, /root/.cache). Document your image's
+                    actual write set before relying on the default.
             status:
               type: object
               properties:

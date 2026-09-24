@@ -151,6 +151,168 @@ func TestRenderDeploymentHardeningDefaults(t *testing.T) {
 	}
 }
 
+// TestRenderDeployment_EmptySpecPreservesTuesdayDefaults is the
+// back-compat guard peer named as the one most likely to break silently
+// when a future PR adds a spec field with a non-zero default. An
+// existing NIMService CR that doesn't set Spec.Resources or
+// Spec.ReadOnlyRootFilesystem MUST render exactly Tuesday's hardening
+// output — same requests, same absence of limits, same absence of
+// read-only-root, same absence of extra volumes/mounts. Any addition
+// that changes this without an operator opt-in is a regression this
+// test catches.
+func TestRenderDeployment_EmptySpecPreservesTuesdayDefaults(t *testing.T) {
+	d := &controller.Deployment{
+		Name:       "llama3-8b",
+		Namespace:  "nim",
+		Image:      "nvcr.io/nim/meta/llama3-8b:1.0.0",
+		Replicas:   1,
+		GPURequest: 1,
+		Port:       8000,
+		// Every override field left zero-valued.
+	}
+	got := renderDeployment(d)
+	pod := got.Spec.Template.Spec
+	c := pod.Containers[0]
+
+	// CPU + memory requests EXACTLY 500m + 2Gi (Tuesday's numbers).
+	if cpu := c.Resources.Requests[corev1.ResourceCPU]; cpu.String() != "500m" {
+		t.Errorf("empty spec: CPU request must be 500m (Tuesday default), got %s", cpu.String())
+	}
+	if mem := c.Resources.Requests[corev1.ResourceMemory]; mem.String() != "2Gi" {
+		t.Errorf("empty spec: memory request must be 2Gi (Tuesday default), got %s", mem.String())
+	}
+	// GPU limit + request from GPURequest.
+	if gpu := c.Resources.Limits["nvidia.com/gpu"]; gpu.Value() != 1 {
+		t.Errorf("empty spec: GPU limit must be 1, got %d", gpu.Value())
+	}
+	// NO CPU limit, NO memory limit (Burstable-QoS by design).
+	if _, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Errorf("empty spec: CPU LIMIT must be absent (Tuesday's Burstable-QoS choice), got %v", c.Resources.Limits[corev1.ResourceCPU])
+	}
+	if _, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+		t.Errorf("empty spec: memory LIMIT must be absent, got %v", c.Resources.Limits[corev1.ResourceMemory])
+	}
+	// NO readOnlyRootFilesystem — Tuesday opted OUT because per-image
+	// write-path testing was needed.
+	if c.SecurityContext != nil && c.SecurityContext.ReadOnlyRootFilesystem != nil && *c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Errorf("empty spec: ReadOnlyRootFilesystem must remain unset (opt-in only)")
+	}
+	// NO extra volumes / volumeMounts (there were none in Tuesday's
+	// output and there should still be none until an operator opts in).
+	if len(pod.Volumes) != 0 {
+		t.Errorf("empty spec: pod.Volumes must be empty, got %d entries: %+v", len(pod.Volumes), pod.Volumes)
+	}
+	if len(c.VolumeMounts) != 0 {
+		t.Errorf("empty spec: container.VolumeMounts must be empty, got %d entries: %+v", len(c.VolumeMounts), c.VolumeMounts)
+	}
+}
+
+// TestRenderDeployment_ResourceOverridesApply asserts the adapter
+// honours Spec.Resources.Requests and .Limits per-field, and that
+// setting one doesn't disturb the other's default.
+func TestRenderDeployment_ResourceOverridesApply(t *testing.T) {
+	d := &controller.Deployment{
+		Name:          "llama3-8b",
+		Namespace:     "nim",
+		Image:         "nvcr.io/nim/meta/llama3-8b:1.0.0",
+		Replicas:      1,
+		GPURequest:    1,
+		Port:          8000,
+		CPURequest:    "2",
+		MemoryRequest: "8Gi",
+		CPULimit:      "4",
+		MemoryLimit:   "16Gi",
+	}
+	got := renderDeployment(d)
+	c := got.Spec.Template.Spec.Containers[0]
+
+	if cpu := c.Resources.Requests[corev1.ResourceCPU]; cpu.String() != "2" {
+		t.Errorf("CPU request override should be 2, got %s", cpu.String())
+	}
+	if mem := c.Resources.Requests[corev1.ResourceMemory]; mem.String() != "8Gi" {
+		t.Errorf("memory request override should be 8Gi, got %s", mem.String())
+	}
+	if cpu := c.Resources.Limits[corev1.ResourceCPU]; cpu.String() != "4" {
+		t.Errorf("CPU limit override should be 4, got %s", cpu.String())
+	}
+	if mem := c.Resources.Limits[corev1.ResourceMemory]; mem.String() != "16Gi" {
+		t.Errorf("memory limit override should be 16Gi, got %s", mem.String())
+	}
+}
+
+// TestRenderDeployment_ReadOnlyRootFilesystem_OptInWithDefaultMount
+// asserts the ROrootfs opt-in + default-mount behaviour peer's key
+// correction landed: when ReadOnlyRootFilesystem is on and
+// WritableMounts is empty, the adapter defaults to ["/tmp"] — a
+// documented guess based on the general NIM shape, overrideable per
+// NIMService when the operator has verified their image needs
+// different paths.
+func TestRenderDeployment_ReadOnlyRootFilesystem_OptInWithDefaultMount(t *testing.T) {
+	d := &controller.Deployment{
+		Name:                   "llama3-8b",
+		Namespace:              "nim",
+		Image:                  "nvcr.io/nim/meta/llama3-8b:1.0.0",
+		Replicas:               1,
+		GPURequest:             1,
+		Port:                   8000,
+		ReadOnlyRootFilesystem: true,
+		// WritableMounts left empty → default ["/tmp"] applied.
+	}
+	got := renderDeployment(d)
+	pod := got.Spec.Template.Spec
+	c := pod.Containers[0]
+
+	if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatalf("ReadOnlyRootFilesystem must be set on container SecurityContext, got %+v", c.SecurityContext)
+	}
+	if len(pod.Volumes) != 1 {
+		t.Fatalf("empty WritableMounts + ROrootfs=true → exactly one default emptyDir volume, got %d: %+v", len(pod.Volumes), pod.Volumes)
+	}
+	if pod.Volumes[0].EmptyDir == nil {
+		t.Errorf("default writable volume must be emptyDir, got %+v", pod.Volumes[0].VolumeSource)
+	}
+	if len(c.VolumeMounts) != 1 || c.VolumeMounts[0].MountPath != "/tmp" {
+		t.Errorf("empty WritableMounts + ROrootfs=true → default mount at /tmp, got %+v", c.VolumeMounts)
+	}
+}
+
+// TestRenderDeployment_ReadOnlyRootFilesystem_OptInWithCustomMounts
+// asserts operator-provided WritableMounts override the /tmp default.
+// Two distinct paths so ordering + count are both exercised.
+func TestRenderDeployment_ReadOnlyRootFilesystem_OptInWithCustomMounts(t *testing.T) {
+	d := &controller.Deployment{
+		Name:                   "llama3-8b",
+		Namespace:              "nim",
+		Image:                  "nvcr.io/nim/meta/llama3-8b:1.0.0",
+		Replicas:               1,
+		GPURequest:             1,
+		Port:                   8000,
+		ReadOnlyRootFilesystem: true,
+		WritableMounts:         []string{"/tmp", "/var/cache/nim"},
+	}
+	got := renderDeployment(d)
+	pod := got.Spec.Template.Spec
+	c := pod.Containers[0]
+
+	if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatalf("ReadOnlyRootFilesystem must be set, got %+v", c.SecurityContext)
+	}
+	if len(pod.Volumes) != 2 {
+		t.Fatalf("expected 2 emptyDir volumes for 2 WritableMounts, got %d: %+v", len(pod.Volumes), pod.Volumes)
+	}
+	if len(c.VolumeMounts) != 2 {
+		t.Fatalf("expected 2 VolumeMounts, got %d: %+v", len(c.VolumeMounts), c.VolumeMounts)
+	}
+	if c.VolumeMounts[0].MountPath != "/tmp" || c.VolumeMounts[1].MountPath != "/var/cache/nim" {
+		t.Errorf("VolumeMount paths must match WritableMounts order, got %+v", c.VolumeMounts)
+	}
+	// Volume names must be unique per index so a k8s server doesn't
+	// reject the pod for duplicate volume names.
+	if pod.Volumes[0].Name == pod.Volumes[1].Name {
+		t.Errorf("volume names must be unique, got %q and %q", pod.Volumes[0].Name, pod.Volumes[1].Name)
+	}
+}
+
 func TestRenderDeploymentOwnerReference(t *testing.T) {
 	d := &controller.Deployment{
 		Name:      "llama3-8b",

@@ -73,6 +73,12 @@ func TestRoundTrip_FullyPopulatedNIMService_PreservesEveryField(t *testing.T) {
 			NGCSecretName: "ngc-key",
 			GPURequest:    2,
 			Port:          9000,
+			Resources: &NIMServiceResources{
+				Requests: &NIMServiceResourceList{CPU: "2", Memory: "8Gi"},
+				Limits:   &NIMServiceResourceList{CPU: "4", Memory: "16Gi"},
+			},
+			ReadOnlyRootFilesystem: true,
+			WritableMounts:         []string{"/tmp", "/var/cache/nim"},
 		},
 		Status: NIMServiceStatus{
 			ObservedGeneration: 41,
@@ -140,6 +146,29 @@ func TestRoundTrip_FullyPopulatedNIMService_PreservesEveryField(t *testing.T) {
 	}
 	if *back.Spec.Replicas != *orig.Spec.Replicas {
 		t.Errorf("Spec.Replicas value lost: want %d, got %d", *orig.Spec.Replicas, *back.Spec.Replicas)
+	}
+
+	// Resources — pointer field with nested pointer fields. A converter
+	// that shallow-copied would leave the returned struct sharing the
+	// same *Requests/*Limits pointers as the input, and DeepCopy would
+	// bleed back. The DeepCopyInto path in nimservice_kube.go must
+	// duplicate the whole tree.
+	if back.Spec.Resources == nil {
+		t.Fatal("Spec.Resources: pointer lost across round-trip")
+	}
+	if back.Spec.Resources.Requests == nil || back.Spec.Resources.Requests.CPU != "2" || back.Spec.Resources.Requests.Memory != "8Gi" {
+		t.Errorf("Spec.Resources.Requests lost fields: got %+v", back.Spec.Resources.Requests)
+	}
+	if back.Spec.Resources.Limits == nil || back.Spec.Resources.Limits.CPU != "4" || back.Spec.Resources.Limits.Memory != "16Gi" {
+		t.Errorf("Spec.Resources.Limits lost fields: got %+v", back.Spec.Resources.Limits)
+	}
+	if !back.Spec.ReadOnlyRootFilesystem {
+		t.Errorf("Spec.ReadOnlyRootFilesystem lost across round-trip")
+	}
+	// WritableMounts — slice field, must be a distinct copy (DeepCopy
+	// would otherwise share the backing array with the source).
+	if len(back.Spec.WritableMounts) != 2 || back.Spec.WritableMounts[0] != "/tmp" || back.Spec.WritableMounts[1] != "/var/cache/nim" {
+		t.Errorf("Spec.WritableMounts lost fields: got %+v", back.Spec.WritableMounts)
 	}
 
 	// Status — including the Conditions slice which the KubeNIMService

@@ -339,6 +339,60 @@ func TestBuildDeployment_PropagatesOwnerUID(t *testing.T) {
 	}
 }
 
+// TestBuildDeployment_PassesResourcesAndROrootfsThrough asserts the
+// reconciler surfaces the new NIMServiceSpec fields into the plain-Go
+// Deployment shape the adapter consumes. This is the reconciler-side
+// half of the contract; the adapter-side half is asserted in
+// cmd/nim-operator/adapter_test.go's Resource / ROrootfs tests.
+func TestBuildDeployment_PassesResourcesAndROrootfsThrough(t *testing.T) {
+	svc := newSvc(v1alpha1.NIMServiceSpec{
+		Image: "img:1",
+		Resources: &v1alpha1.NIMServiceResources{
+			Requests: &v1alpha1.NIMServiceResourceList{CPU: "2", Memory: "8Gi"},
+			Limits:   &v1alpha1.NIMServiceResourceList{CPU: "4", Memory: "16Gi"},
+		},
+		ReadOnlyRootFilesystem: true,
+		WritableMounts:         []string{"/tmp", "/var/cache/nim"},
+	})
+	svc.Spec.ApplyDefaults()
+
+	d := BuildDeployment(svc)
+
+	if d.CPURequest != "2" || d.MemoryRequest != "8Gi" {
+		t.Errorf("Resources.Requests not propagated: got CPU=%q Memory=%q", d.CPURequest, d.MemoryRequest)
+	}
+	if d.CPULimit != "4" || d.MemoryLimit != "16Gi" {
+		t.Errorf("Resources.Limits not propagated: got CPU=%q Memory=%q", d.CPULimit, d.MemoryLimit)
+	}
+	if !d.ReadOnlyRootFilesystem {
+		t.Error("ReadOnlyRootFilesystem not propagated")
+	}
+	if len(d.WritableMounts) != 2 || d.WritableMounts[0] != "/tmp" || d.WritableMounts[1] != "/var/cache/nim" {
+		t.Errorf("WritableMounts not propagated: got %+v", d.WritableMounts)
+	}
+}
+
+// TestBuildDeployment_ZeroResourcesLeavesFieldsEmpty asserts an
+// unset Spec.Resources leaves the Deployment override fields empty
+// so the adapter falls back to its Tuesday defaults — the back-compat
+// path.
+func TestBuildDeployment_ZeroResourcesLeavesFieldsEmpty(t *testing.T) {
+	svc := newSvc(v1alpha1.NIMServiceSpec{Image: "img:1"})
+	svc.Spec.ApplyDefaults()
+
+	d := BuildDeployment(svc)
+	if d.CPURequest != "" || d.MemoryRequest != "" || d.CPULimit != "" || d.MemoryLimit != "" {
+		t.Errorf("empty Resources spec must produce empty override strings so adapter uses its defaults, got CPUReq=%q MemReq=%q CPULim=%q MemLim=%q",
+			d.CPURequest, d.MemoryRequest, d.CPULimit, d.MemoryLimit)
+	}
+	if d.ReadOnlyRootFilesystem {
+		t.Error("ReadOnlyRootFilesystem must default to false")
+	}
+	if len(d.WritableMounts) != 0 {
+		t.Errorf("WritableMounts must default to empty, got %+v", d.WritableMounts)
+	}
+}
+
 func hasCondition(cs []v1alpha1.Condition, typ, status string) bool {
 	for _, c := range cs {
 		if c.Type == typ && c.Status == status {

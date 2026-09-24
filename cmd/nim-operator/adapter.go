@@ -144,68 +144,124 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 		envVars = append(envVars, env)
 	}
 
-	// Resource requests+limits. GPU is set from NIMService.Spec (an
-	// operator knob). CPU + memory are REQUESTS ONLY here — no LIMITS
-	// — because NIMService.Spec has no CPU/memory tuning knobs yet
-	// (adding one is a CRD schema change scoped as follow-up), and a
-	// hardcoded CPU/memory LIMIT would throttle or OOMKill some
-	// legitimate NIM workloads. Requests give the scheduler headroom
-	// so a runaway pod can't starve every co-tenant on the node;
-	// bursting above the request stays possible on pressure. This is
-	// a Burstable-QoS shape by design. When NIMService.Spec gains CPU
-	// and Memory fields the LIMITS branch should land alongside them.
+	// Resource requests+limits. GPU is always set from NIMService.Spec.
+	// CPU + memory REQUESTS default to Tuesday's hardening baseline
+	// (500m + 2Gi) and are overridable per NIMService via Spec.Resources;
+	// CPU + memory LIMITS default to unset (Burstable-QoS by design —
+	// no ceiling means a NIM whose real usage exceeds a hardcoded limit
+	// isn't OOMKilled by the operator, only by node exhaustion) and are
+	// also settable per NIMService when the operator has verified a
+	// specific workload's ceiling.
+	//
+	// The default → override precedence is intentional: empty
+	// d.CPURequest/MemoryRequest keeps Tuesday's numbers byte-identical
+	// for existing NIMService CRs that don't set Spec.Resources, so
+	// this addition is strictly additive. Empty d.CPULimit/MemoryLimit
+	// keeps "no LIMIT" — the specific choice Tuesday made and peer
+	// endorsed as safer than a hardcoded ceiling.
+	cpuReqStr := d.CPURequest
+	if cpuReqStr == "" {
+		cpuReqStr = "500m"
+	}
+	memReqStr := d.MemoryRequest
+	if memReqStr == "" {
+		memReqStr = "2Gi"
+	}
 	resources := corev1.ResourceRequirements{
 		Limits: corev1.ResourceList{
 			"nvidia.com/gpu": *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
 		},
 		Requests: corev1.ResourceList{
 			"nvidia.com/gpu":      *resource.NewQuantity(int64(d.GPURequest), resource.DecimalSI),
-			corev1.ResourceCPU:    resource.MustParse("500m"),
-			corev1.ResourceMemory: resource.MustParse("2Gi"),
+			corev1.ResourceCPU:    resource.MustParse(cpuReqStr),
+			corev1.ResourceMemory: resource.MustParse(memReqStr),
 		},
 	}
+	if d.CPULimit != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(d.CPULimit)
+	}
+	if d.MemoryLimit != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(d.MemoryLimit)
+	}
 
-	// Pod- and container-level hardening. This is a FIRST SLICE — the
-	// defaults added here are the ones safe to apply without a
-	// NIMService.Spec extension:
+	// Pod- and container-level hardening. Defaults are Tuesday's
+	// baseline — safe to apply without operator opt-in. The per-
+	// NIMService overrides for ReadOnlyRootFilesystem + WritableMounts
+	// land here as opt-in additions on top of the baseline.
 	//
-	//   Pod:
-	//     - runAsNonRoot: true — kubelet rejects pods whose image
-	//       USER is 0. NVIDIA NIM images ship as a non-root user, so
-	//       this passes for the intended catalogue and surfaces
-	//       misconfigured or hand-built root images loudly instead of
-	//       silently.
+	//   Pod (always on):
+	//     - runAsNonRoot: true — kubelet rejects pods whose image USER
+	//       is 0; misconfigured images fail loudly instead of silently.
 	//     - seccompProfile: RuntimeDefault — required for
 	//       PodSecurityStandards restricted profile admission.
-	//     - automountServiceAccountToken: false — NIM inference pods
-	//       do not call the Kubernetes API; mounting the SA token is
-	//       an exfiltration surface for a jailbroken workload.
+	//     - automountServiceAccountToken: false — NIM does not call the
+	//       K8s API; mounting the SA token is an exfil surface for a
+	//       jailbroken workload.
 	//
-	//   Container:
-	//     - allowPrivilegeEscalation: false — no setuid path to root.
-	//     - capabilities.drop [ALL] — NIM needs no Linux capabilities.
+	//   Container (always on):
+	//     - allowPrivilegeEscalation: false
+	//     - capabilities.drop [ALL]
 	//
-	// EXPLICITLY NOT included in this slice (recorded so a reader
-	// does not walk away thinking the rendered pod is fully
-	// hardened):
+	//   Container (opt-in via Spec.ReadOnlyRootFilesystem):
+	//     - readOnlyRootFilesystem: true
+	//     - emptyDir volumes at each Spec.WritableMounts path; default
+	//       WritableMounts=["/tmp"] when the list is empty. That
+	//       default is a GUESS based on the general NIM shape and has
+	//       not been verified against a specific image (NIM images may
+	//       need /var/cache, /root/.cache, etc.). The operator sets
+	//       WritableMounts explicitly for a verified image. See the
+	//       NIMServiceSpec.WritableMounts godoc for the reasoning.
 	//
-	//   - readOnlyRootFilesystem — NIM binaries write to caches
-	//     inside the image; enabling this requires an emptyDir
-	//     volume mount plan the CRD does not describe yet.
-	//   - runAsUser (explicit UID) — NIM images set their own USER;
-	//     forcing an override may break the image's own filesystem
-	//     assumptions.
-	//   - CPU/memory LIMITS — no operator knob; see resources note.
-	//   - Per-NIMService NetworkPolicy — governance concern layered
-	//     at aigov chart level, not renderable here.
-	//
-	// Follow-up ticket: extend NIMService.Spec with a SecurityContext
-	// passthrough + Resources block so operators can override these
-	// defaults per workload, then land readOnlyRootFilesystem behind
-	// that override.
+	// STILL DEFERRED to a follow-up (recorded so the rendered pod's
+	// hardening state stays honest to the reader):
+	//   - Full corev1.SecurityContext passthrough (runAsUser override,
+	//     seccomp override, capabilities.add). Requires plain-Go mirror
+	//     types for every field to preserve the pure-reconciler split;
+	//     real CRD schema work.
+	//   - Per-NIMService NetworkPolicy — governance concern layered at
+	//     aigov chart level, not renderable here.
 	nonRoot := true
 	noPrivEsc := false
 	replicas := d.Replicas
+
+	// WritableMounts default: peer's key correction to my scope proposal
+	// — never hardcode the mount path inside the adapter, because it
+	// makes an unverifiable assumption about NIM's write set. Instead
+	// default the empty list to ["/tmp"] AT USE SITE only when
+	// ReadOnlyRootFilesystem is on, so operators who verified their
+	// image can override the default and operators who leave it get a
+	// documented-guess starting point.
+	writableMounts := d.WritableMounts
+	if d.ReadOnlyRootFilesystem && len(writableMounts) == 0 {
+		writableMounts = []string{"/tmp"}
+	}
+
+	containerSecCtx := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &noPrivEsc,
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+	if d.ReadOnlyRootFilesystem {
+		readOnly := true
+		containerSecCtx.ReadOnlyRootFilesystem = &readOnly
+		volumes = make([]corev1.Volume, 0, len(writableMounts))
+		volumeMounts = make([]corev1.VolumeMount, 0, len(writableMounts))
+		for i, path := range writableMounts {
+			volName := fmt.Sprintf("writable-%d", i)
+			volumes = append(volumes, corev1.Volume{
+				Name:         volName,
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      volName,
+				MountPath: path,
+			})
+		}
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            d.Name,
@@ -230,22 +286,19 @@ func renderDeployment(d *controller.Deployment) *appsv1.Deployment {
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
+					Volumes: volumes,
 					Containers: []corev1.Container{{
-						Name:      "nim",
-						Image:     d.Image,
-						Env:       envVars,
-						Resources: resources,
+						Name:            "nim",
+						Image:           d.Image,
+						Env:             envVars,
+						Resources:       resources,
+						VolumeMounts:    volumeMounts,
+						SecurityContext: containerSecCtx,
 						Ports: []corev1.ContainerPort{{
 							Name:          "http",
 							ContainerPort: d.Port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: &noPrivEsc,
-							Capabilities: &corev1.Capabilities{
-								Drop: []corev1.Capability{"ALL"},
-							},
-						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
