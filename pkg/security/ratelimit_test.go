@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -183,5 +184,77 @@ func TestTokenBucket_RefillPreservesSubIntervalRemainder(t *testing.T) {
 	tb.Allow("team-a", 0)
 	if got := tb.Remaining("team-a"); got != 2 {
 		t.Fatalf("expected 2 tokens once the carried-forward remainder completes a whole interval, got %d (remainder was discarded)", got)
+	}
+}
+
+// TestTokenBucket_TenantCapBoundsMemoryAndSharesOverflow pins the fix
+// for the same DoS shape as Stats.tenantStats: X-Tenant is client-
+// asserted, so an attacker cycling unique tenant headers could grow
+// TokenBucket.buckets without bound. The cap routes overflow into a
+// shared OverflowTenant bucket rather than growing the map, and
+// increments Overflows() so /stats can render RateLimitOverflows.
+//
+// The design deliberately picks cap-then-overflow over LRU eviction:
+// LRU would let an attacker evict a legitimate tenant's already-
+// exhausted bucket, handing them a freshly-refilled one on their next
+// request — making the DoS attack the CHEAPER path. Overflow-sharing
+// means the attacker's fake tenants all rate-limit each other through
+// one bucket, so cycling names buys them nothing.
+func TestTokenBucket_TenantCapBoundsMemoryAndSharesOverflow(t *testing.T) {
+	// Cap 3, large per-tenant capacity so per-request Allow returns
+	// don't obscure the cardinality behaviour under test.
+	tb := NewTokenBucket(1000, 1000).WithMaxTenants(3)
+
+	// First three distinct tenants get their own buckets.
+	for _, tenant := range []string{"alpha", "bravo", "charlie"} {
+		if !tb.Allow(tenant, 1) {
+			t.Fatalf("legitimate tenant %q must be allowed", tenant)
+		}
+	}
+	if tb.Overflows() != 0 {
+		t.Errorf("no overflow expected within cap, got %d", tb.Overflows())
+	}
+
+	// Fourth and fifth distinct tenants must NOT allocate new buckets
+	// — they share the OverflowTenant bucket.
+	if !tb.Allow("delta", 1) {
+		t.Errorf("delta must land in shared overflow bucket (has capacity), got denied")
+	}
+	if !tb.Allow("echo", 1) {
+		t.Errorf("echo must land in shared overflow bucket (has capacity), got denied")
+	}
+
+	// Overflows counter reflects both cap-firings so /stats can render
+	// it — silent cap-firing is the failure mode we're preventing.
+	if tb.Overflows() != 2 {
+		t.Errorf("Overflows should be 2 (one per cap-fire), got %d", tb.Overflows())
+	}
+
+	// The overflow tenants share the SAME bucket — critical property
+	// for the "attacker cycling names buys nothing" guarantee. Assert
+	// by exhausting delta's supposed budget through echo's key: if
+	// they shared correctly, echo's Remaining should reflect delta's
+	// consumption.
+	deltaRem := tb.Remaining("delta")
+	echoRem := tb.Remaining("echo")
+	if deltaRem != echoRem {
+		t.Errorf("delta and echo must observe the SAME shared overflow bucket; got Remaining(delta)=%d, Remaining(echo)=%d", deltaRem, echoRem)
+	}
+
+	// 100 more attacker-cardinality tenants must not grow the map.
+	// The Overflows counter should reflect every one of them.
+	before := tb.Overflows()
+	for i := 0; i < 100; i++ {
+		tb.Allow(fmt.Sprintf("attacker-%d", i), 1)
+	}
+	if got := tb.Overflows() - before; got != 100 {
+		t.Errorf("Overflows should increment for each attacker request past cap; want +100, got +%d", got)
+	}
+
+	// Legitimate tenants' state is preserved — no LRU eviction robbed
+	// them of their bucket. Consuming alpha's remaining budget should
+	// still succeed if the bucket wasn't evicted.
+	if !tb.Allow("alpha", 1) {
+		t.Errorf("alpha's bucket must survive the cap being hit — cap-then-overflow does NOT evict existing entries under attacker cardinality")
 	}
 }

@@ -166,6 +166,30 @@ func buildFromPolicy(policy v1alpha1.InferencePolicySpec) (*security.PromptCheck
 	return checker, rateLimiter, gr, nil
 }
 
+// Overflows returns the running count of Allow calls that fell into
+// the shared OverflowTenant bucket because the rate limiter's
+// distinct-tenant cap was reached. Reads under RLock so a concurrent
+// reload's rate-limiter swap doesn't race. Zero when no limiter is
+// configured. Satisfies proxy.rateLimiterProbe for stats wiring.
+//
+// The count resets on policy reload — the new TokenBucket starts at
+// zero. That's a deliberate trade: making the count survive reload
+// would require aggregating into a Stats-side counter, which either
+// duplicates the value across two locations or forces every Allow
+// call to double-write. For an operational signal watched via /stats
+// polling, the short-lived reset around infrequent reloads is
+// acceptable; the value the /stats snapshot renders is honest for
+// the currently-active policy, which is the meaningful window.
+func (m *Middleware) Overflows() int64 {
+	m.mu.RLock()
+	rl := m.rateLimiter
+	m.mu.RUnlock()
+	if rl == nil {
+		return 0
+	}
+	return rl.Overflows()
+}
+
 // NewMiddleware creates a security middleware from a policy spec.
 func NewMiddleware(policy v1alpha1.InferencePolicySpec, next http.Handler, auditFn func(AuditEvent)) (*Middleware, error) {
 	checker, rateLimiter, gr, err := buildFromPolicy(policy)

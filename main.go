@@ -106,6 +106,13 @@ func main() {
 		log.Fatalf("modelgate: creating middleware: %v", err)
 	}
 
+	// Register the middleware as the rate-limiter probe so /stats
+	// exposes RateLimitOverflows alongside TenantOverflows — the
+	// visibility surface for the distinct-tenant cap that stops an
+	// attacker from growing per-tenant maps without bound via
+	// arbitrary X-Tenant headers.
+	stats.WithRateLimiter(mw)
+
 	// Start policy hot-reloader (watches file every 5 seconds)
 	reloader := proxy.NewPolicyReloader(*policyFile, mw, 5*time.Second)
 	reloader.Start()

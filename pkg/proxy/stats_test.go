@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -166,5 +167,73 @@ func TestStats_WithAuditBroker_NilIsNoop(t *testing.T) {
 	resp := s.ToResponse()
 	if resp.AuditStream != nil {
 		t.Errorf("WithAuditBroker(nil) must not wire a probe, got %+v", resp.AuditStream)
+	}
+}
+
+// TestStats_TenantCapBoundsMemoryAndRoutesToOverflow pins the fix for
+// a real DoS: X-Tenant is client-asserted, so an attacker sending N
+// unique tenant headers could grow tenantStats without bound and OOM
+// the proxy. The cap routes overflow into a shared OverflowTenant
+// entry rather than growing the map, and increments TenantOverflows
+// so cap-firing is visible on /stats instead of silent — silent
+// eviction is what nobody notices until an incident timeline is
+// being read.
+func TestStats_TenantCapBoundsMemoryAndRoutesToOverflow(t *testing.T) {
+	s := NewStats().WithMaxTenants(3)
+
+	// First 3 distinct tenants land in their own entries.
+	s.RecordAllowed("alpha")
+	s.RecordAllowed("bravo")
+	s.RecordAllowed("charlie")
+
+	// 4th and 5th distinct tenants must NOT create new entries — they
+	// route into the shared OverflowTenant entry.
+	s.RecordAllowed("delta")
+	s.RecordBlocked("echo", "prompt_injection")
+
+	resp := s.ToResponse()
+
+	// Overflow tenant must exist and carry both routed events.
+	ov, ok := resp.Tenants[OverflowTenant]
+	if !ok {
+		t.Fatalf("OverflowTenant %q missing from response; got tenants=%v", OverflowTenant, resp.Tenants)
+	}
+	if ov.Allowed != 1 || ov.Blocked != 1 {
+		t.Errorf("OverflowTenant should aggregate the 4th allowed + 5th blocked, got allowed=%d blocked=%d", ov.Allowed, ov.Blocked)
+	}
+
+	// TenantOverflows counter reflects both cap-firings so operators
+	// see the signal on /stats.
+	if resp.TenantOverflows != 2 {
+		t.Errorf("TenantOverflows should be 2 (one per cap-fire), got %d", resp.TenantOverflows)
+	}
+
+	// Original three tenants are untouched — no LRU eviction robbed
+	// them of state because of attacker-controlled cardinality.
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		if resp.Tenants[name].Allowed != 1 {
+			t.Errorf("tenant %q must retain its Allowed=1 (cap-then-overflow does NOT evict existing), got %+v", name, resp.Tenants[name])
+		}
+	}
+
+	// Map size is bounded at maxTenants + 1 (the +1 is the overflow
+	// entry itself); it does NOT keep growing with additional distinct
+	// tenants beyond the cap.
+	if len(resp.Tenants) != 4 { // alpha bravo charlie + _overflow
+		t.Errorf("tenants map must be bounded at maxTenants+1=4, got %d entries: %v", len(resp.Tenants), resp.Tenants)
+	}
+
+	// Another 100 unique attacker-cardinality tenants must not grow
+	// the map further — the cap holds regardless of how much traffic
+	// hits it.
+	for i := 0; i < 100; i++ {
+		s.RecordAllowed(fmt.Sprintf("attacker-%d", i))
+	}
+	resp = s.ToResponse()
+	if len(resp.Tenants) != 4 {
+		t.Errorf("map grew under 100 attacker tenants — cap not enforced; got %d entries", len(resp.Tenants))
+	}
+	if resp.TenantOverflows != 102 {
+		t.Errorf("TenantOverflows should be 2 (original) + 100 (attackers) = 102, got %d", resp.TenantOverflows)
 	}
 }
