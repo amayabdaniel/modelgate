@@ -153,6 +153,15 @@ func TestAuditBroker_ConcurrentPublishersAndSubscribers(t *testing.T) {
 	}
 }
 
+// TestAuditBroker_UnsubscribeIdempotent asserts panic-safety across
+// three redundant Unsubscribe shapes: a valid duplicate, and a nil
+// pointer. The assertion isn't -race and isn't an explicit t.Errorf —
+// it's the testing framework's own panic recovery. Any of the three
+// calls that panicked would fail the test via testing.tRunner's
+// deferred recover printing "goroutine panicked" and marking the run
+// FAIL. Documenting this so a future reader who audits assertions and
+// finds no t.Errorf doesn't assume the test proves nothing — it does,
+// it just does so through a different mechanism than the usual one.
 func TestAuditBroker_UnsubscribeIdempotent(t *testing.T) {
 	b := NewAuditBroker()
 	defer b.Close()

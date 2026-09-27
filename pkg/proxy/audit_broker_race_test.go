@@ -20,6 +20,14 @@ import (
 // exists to catch a regression if someone reintroduces a lock-free
 // back-pointer or any other unsynchronised access to per-subscription
 // state during a concurrent Close.
+//
+// REQUIRES -race. The entire assertion of this test IS the Go race
+// detector: there is no t.Errorf call in the body, no state check
+// after the workload runs. Without -race the test exercises many
+// goroutines and passes unconditionally, learning nothing about
+// concurrency safety. `make test` in this repo passes -race so the
+// safety net holds in CI; running `go test ./...` bare gives a green
+// signal that means nothing for this test.
 func TestAuditBroker_UnsubscribeConcurrentWithClose_NoRace(t *testing.T) {
 	for iter := 0; iter < 50; iter++ {
 		b := NewAuditBroker()
