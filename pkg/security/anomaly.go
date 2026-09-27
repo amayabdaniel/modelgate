@@ -14,13 +14,18 @@ type PromptProfile struct {
 }
 
 type tenantProfile struct {
-	count           int
-	sumLength       float64
-	sumLengthSq     float64
-	sumWordCount    float64
-	sumWordCountSq  float64
-	maxLength       int
-	lastAlertLength int
+	count       int
+	sumLength   float64
+	sumLengthSq float64
+	// Prior versions carried sumWordCount, sumWordCountSq, maxLength
+	// and lastAlertLength on this struct, all written into during
+	// Observe but never read anywhere in the package (lastAlertLength
+	// was never even written — golangci-lint's `unused` linter caught
+	// that one; the others got missed because they had a written
+	// side). Dropped rather than kept as scaffolding: dead per-tenant
+	// state grows with the tenant map (see the cap-then-overflow work
+	// in pkg/proxy/stats and pkg/security/ratelimit) and every unread
+	// float64 was 8 bytes × up to 4096 tenants of memory waste.
 }
 
 // AnomalyResult describes a detected prompt anomaly.
@@ -45,7 +50,6 @@ func NewPromptProfile(minSamples int) *PromptProfile {
 // Observe records a prompt and returns any anomaly detected.
 func (pp *PromptProfile) Observe(tenant, prompt string) AnomalyResult {
 	length := len(prompt)
-	words := countWords(prompt)
 
 	pp.mu.Lock()
 	p, ok := pp.profiles[tenant]
@@ -57,11 +61,6 @@ func (pp *PromptProfile) Observe(tenant, prompt string) AnomalyResult {
 	p.count++
 	p.sumLength += float64(length)
 	p.sumLengthSq += float64(length) * float64(length)
-	p.sumWordCount += float64(words)
-	p.sumWordCountSq += float64(words) * float64(words)
-	if length > p.maxLength {
-		p.maxLength = length
-	}
 
 	count := p.count
 	sumLen := p.sumLength
