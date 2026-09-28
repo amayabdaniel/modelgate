@@ -155,13 +155,19 @@ func TestAuditBroker_ConcurrentPublishersAndSubscribers(t *testing.T) {
 
 // TestAuditBroker_UnsubscribeIdempotent asserts panic-safety across
 // three redundant Unsubscribe shapes: a valid duplicate, and a nil
-// pointer. The assertion isn't -race and isn't an explicit t.Errorf —
-// it's the testing framework's own panic recovery. Any of the three
-// calls that panicked would fail the test via testing.tRunner's
-// deferred recover printing "goroutine panicked" and marking the run
-// FAIL. Documenting this so a future reader who audits assertions and
-// finds no t.Errorf doesn't assume the test proves nothing — it does,
-// it just does so through a different mechanism than the usual one.
+// pointer. The panic-safety assertion comes from testing.tRunner's
+// deferred recover — any of the three calls that panicked would fail
+// the test with "goroutine panicked" regardless of any explicit
+// t.Errorf. Documenting this so a future reader who audits assertions
+// and finds no t.Errorf doesn't misread its absence as "test proves
+// nothing" — the framework's panic recovery is a real assertion.
+//
+// The Subscribers() post-workload check below is a paired-signal
+// invariant that holds even if panic-safety somehow degraded to
+// silent no-ops instead of panics: after three Unsubscribe calls the
+// map must be empty. A bug that let the second Unsubscribe leave the
+// entry behind, or that decremented past zero into an incoherent
+// state, would fail this without needing to panic first.
 func TestAuditBroker_UnsubscribeIdempotent(t *testing.T) {
 	b := NewAuditBroker()
 	defer b.Close()
@@ -169,6 +175,10 @@ func TestAuditBroker_UnsubscribeIdempotent(t *testing.T) {
 	b.Unsubscribe(s)
 	b.Unsubscribe(s) // must not panic
 	b.Unsubscribe(nil)
+
+	if n := b.Subscribers(); n != 0 {
+		t.Errorf("after Unsubscribe(s), Unsubscribe(s), Unsubscribe(nil) the broker must hold zero subscribers, got %d — either the duplicate Unsubscribe re-added an entry, or the map lost coherence in a way panic-safety alone wouldn't catch", n)
+	}
 }
 
 func TestAuditBroker_TotalDropped_TracksOverflowsAcrossAllSubscribers(t *testing.T) {
