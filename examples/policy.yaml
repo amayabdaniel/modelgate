@@ -15,17 +15,8 @@ security:
     - "drop table"
   max_prompt_tokens: 8192
 
-routing:
-  rules:
-    - if: "prompt_tokens < 2000"
-      model: qwen3-8b
-    - if: "prompt_tokens >= 2000"
-      model: llama3-70b
-
 rateLimits:
   - tenant: support-team
     tokens_per_minute: 50000
-    requests_per_minute: 100
   - tenant: dev-team
     tokens_per_minute: 20000
-    requests_per_minute: 50

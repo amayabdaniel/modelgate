@@ -276,7 +276,7 @@ func TestMiddleware_UnparseableBodyAuditsPassthrough(t *testing.T) {
 func TestMiddleware_RateLimiting(t *testing.T) {
 	policy := v1alpha1.InferencePolicySpec{
 		RateLimits: []v1alpha1.RateLimit{
-			{Tenant: "test-team", TokensPerMinute: 100, RequestsPerMinute: 10},
+			{Tenant: "test-team", TokensPerMinute: 100},
 		},
 	}
 

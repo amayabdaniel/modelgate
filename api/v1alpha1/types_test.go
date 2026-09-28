@@ -14,14 +14,8 @@ func TestInferencePolicySpec_ValidFull(t *testing.T) {
 			BlockedPatterns:           []string{"ignore previous instructions"},
 			MaxPromptTokens:           8192,
 		},
-		Routing: RoutingPolicy{
-			Rules: []RoutingRule{
-				{Condition: "prompt_tokens < 2000", Model: "qwen3-8b"},
-				{Condition: "prompt_tokens >= 2000", Model: "llama3-70b"},
-			},
-		},
 		RateLimits: []RateLimit{
-			{Tenant: "support-team", TokensPerMinute: 50000, RequestsPerMinute: 100},
+			{Tenant: "support-team", TokensPerMinute: 50000},
 		},
 	}
 
@@ -73,7 +67,7 @@ func TestRateLimit_ZeroTokens(t *testing.T) {
 }
 
 func TestRateLimit_Valid(t *testing.T) {
-	r := &RateLimit{Tenant: "team-a", TokensPerMinute: 50000, RequestsPerMinute: 200}
+	r := &RateLimit{Tenant: "team-a", TokensPerMinute: 50000}
 	if err := r.Validate(); err != nil {
 		t.Fatalf("expected valid rate limit, got: %v", err)
 	}
@@ -88,16 +82,3 @@ func TestSecurityPolicy_NegativeMaxTokens(t *testing.T) {
 	}
 }
 
-func TestRoutingRules_Structure(t *testing.T) {
-	rules := []RoutingRule{
-		{Condition: "prompt_tokens < 2000", Model: "small-model"},
-		{Condition: "prompt_tokens >= 2000", Model: "large-model"},
-	}
-
-	if len(rules) != 2 {
-		t.Fatalf("expected 2 rules, got %d", len(rules))
-	}
-	if rules[0].Model != "small-model" {
-		t.Errorf("expected small-model, got %s", rules[0].Model)
-	}
-}

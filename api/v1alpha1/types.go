@@ -3,15 +3,21 @@ package v1alpha1
 import "fmt"
 
 // InferencePolicySpec defines governance rules for AI inference traffic.
+//
+// A prior version carried a Routing RoutingPolicy field with Rules of
+// {if, model} shape, documented in examples/policy.yaml and tested in
+// TestRoutingRules_Structure — but no code in the tree ever consumed
+// it. An operator who wrote a routing block into their policy saw a
+// silently-ignored config. Removed rather than kept as scaffolding so
+// the schema stops lying about capabilities the runtime doesn't
+// enforce; the honest re-introduction is to add the field back the
+// same commit that wires the router.
 type InferencePolicySpec struct {
 	// Budgets defines per-tenant spending limits.
 	Budgets []TenantBudget `yaml:"budgets,omitempty" json:"budgets,omitempty"`
 
 	// Security defines prompt-level security controls.
 	Security SecurityPolicy `yaml:"security,omitempty" json:"security,omitempty"`
-
-	// Routing defines model routing rules based on request properties.
-	Routing RoutingPolicy `yaml:"routing,omitempty" json:"routing,omitempty"`
 
 	// RateLimits defines token-aware rate limiting.
 	RateLimits []RateLimit `yaml:"rateLimits,omitempty" json:"rateLimits,omitempty"`
@@ -41,19 +47,17 @@ type SecurityPolicy struct {
 	GuardrailsFailClosed bool `yaml:"guardrails_fail_closed,omitempty" json:"guardrails_fail_closed,omitempty"`
 }
 
-type RoutingPolicy struct {
-	Rules []RoutingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
-}
-
-type RoutingRule struct {
-	Condition string `yaml:"if" json:"if"`
-	Model     string `yaml:"model" json:"model"`
-}
-
+// RateLimit configures the per-tenant token bucket enforced by
+// pkg/security/TokenBucket. Prior versions also carried a
+// RequestsPerMinute int, documented in examples/policy.yaml and
+// README.md — but the TokenBucket only reads TokensPerMinute, so a
+// value in RequestsPerMinute was silently ignored. Removed with the
+// docs so the schema stops promising a control the code doesn't
+// enforce; the honest re-introduction is to add the field back the
+// same commit that wires the requests-per-minute limiter.
 type RateLimit struct {
-	Tenant            string `yaml:"tenant,omitempty" json:"tenant,omitempty"`
-	TokensPerMinute   int    `yaml:"tokens_per_minute" json:"tokens_per_minute"`
-	RequestsPerMinute int    `yaml:"requests_per_minute,omitempty" json:"requests_per_minute,omitempty"`
+	Tenant          string `yaml:"tenant,omitempty" json:"tenant,omitempty"`
+	TokensPerMinute int    `yaml:"tokens_per_minute" json:"tokens_per_minute"`
 }
 
 // Validate checks the policy spec for correctness.

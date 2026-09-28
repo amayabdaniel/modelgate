@@ -56,7 +56,6 @@ security:
 rateLimits:
   - tenant: support-team
     tokens_per_minute: 50000
-    requests_per_minute: 100
 ```
 
 ### What happens
