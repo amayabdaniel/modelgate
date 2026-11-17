@@ -2,7 +2,7 @@
 
 Gateway API Inference governance for Kubernetes.
 
-Security proxy for LLM APIs — prompt injection protection, PII redaction, per-tenant budgets, and audit trails.
+Security proxy for LLM APIs — prompt injection protection, PII redaction, token-aware rate limiting, and audit trails.
 
 ## The problem
 
@@ -40,11 +40,6 @@ modelgate --policy=policy.yaml --backend=http://localhost:8000 --listen=:8080
 
 ```yaml
 # policy.yaml
-budgets:
-  - tenant: support-team
-    monthly_limit_usd: 3000
-    alert_at_percent: 80
-
 security:
   prompt_injection_protection: true
   pii_redaction: true

@@ -53,7 +53,7 @@ You will receive a response within 72 hours.
 | Multimodal content bypass | OpenAI chat `content` sent as an array of parts (text/image/audio) doesn't match our string-typed decoder, so it reaches upstream without regex/PII/Guardrails inspection | The middleware emits an audit event with `action: "passthrough"` and `reason: "body does not match chat schema"` so the request is visible on `/v1/audit/stream`; it is **audited but not inspected** — real inspection (json.RawMessage-based extraction of text parts, and a policy decision on what to do with image/audio parts) is scoped follow-up | Audited, not inspected |
 | Data exfiltration via output | Model leaks PII, secrets, system prompt | Output scanning + PII redaction + secret masking | Implemented |
 | Model DoS | Large prompts or rapid requests exhaust GPU | Token-aware rate limiting per tenant | Implemented |
-| Cost abuse | Tenant generates excessive inference cost | Per-tenant budget enforcement | Implemented (types), TODO (enforcement) |
+| Cost abuse | Tenant generates excessive inference cost | Per-tenant budget enforcement (cost tracking + alert emission + billing persistence) — not yet wired. Token-aware rate limiting (see Model DoS row) bounds request volume per tenant but does not cap dollar spend. | TODO |
 | Tenant isolation breach | Shared GPU leaks data between tenants | Network policies + separate model instances per tenant | Partial |
 | Supply chain | Malicious model weights | Allowed registries list, image signing | TODO |
 | Credential theft | API keys in transit or logs | TLS enforcement, secret masking in audit logs | Partial |

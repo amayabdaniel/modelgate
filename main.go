@@ -34,8 +34,8 @@ func main() {
 		log.Fatalf("modelgate: loading policy: %v", err)
 	}
 	log.Printf("modelgate: loaded policy from %s", *policyFile)
-	log.Printf("modelgate: %d budget rules, %d rate limits, injection protection=%t, pii redaction=%t",
-		len(policy.Budgets), len(policy.RateLimits),
+	log.Printf("modelgate: %d rate limits, injection protection=%t, pii redaction=%t",
+		len(policy.RateLimits),
 		policy.Security.PromptInjectionProtection, policy.Security.PIIRedaction)
 
 	// Resolve provider (generic, nim, ...). Provider encapsulates upstream

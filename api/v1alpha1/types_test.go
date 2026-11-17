@@ -4,10 +4,6 @@ import "testing"
 
 func TestInferencePolicySpec_ValidFull(t *testing.T) {
 	spec := &InferencePolicySpec{
-		Budgets: []TenantBudget{
-			{Tenant: "support-team", MonthlyLimitUSD: 3000, AlertAtPercent: 80},
-			{Tenant: "dev-team", MonthlyLimitUSD: 500, AlertAtPercent: 90},
-		},
 		Security: SecurityPolicy{
 			PromptInjectionProtection: true,
 			PIIRedaction:              true,
@@ -28,34 +24,6 @@ func TestInferencePolicySpec_MinimalValid(t *testing.T) {
 	spec := &InferencePolicySpec{}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("empty spec should be valid, got: %v", err)
-	}
-}
-
-func TestTenantBudget_MissingTenant(t *testing.T) {
-	b := &TenantBudget{MonthlyLimitUSD: 1000}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for missing tenant")
-	}
-}
-
-func TestTenantBudget_ZeroBudget(t *testing.T) {
-	b := &TenantBudget{Tenant: "test", MonthlyLimitUSD: 0}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for zero budget")
-	}
-}
-
-func TestTenantBudget_NegativeBudget(t *testing.T) {
-	b := &TenantBudget{Tenant: "test", MonthlyLimitUSD: -100}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for negative budget")
-	}
-}
-
-func TestTenantBudget_InvalidAlertPercent(t *testing.T) {
-	b := &TenantBudget{Tenant: "test", MonthlyLimitUSD: 1000, AlertAtPercent: 150}
-	if err := b.Validate(); err == nil {
-		t.Fatal("expected error for alert_at_percent > 100")
 	}
 }
 

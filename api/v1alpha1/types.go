@@ -4,29 +4,25 @@ import "fmt"
 
 // InferencePolicySpec defines governance rules for AI inference traffic.
 //
-// A prior version carried a Routing RoutingPolicy field with Rules of
-// {if, model} shape, documented in examples/policy.yaml and tested in
-// TestRoutingRules_Structure — but no code in the tree ever consumed
-// it. An operator who wrote a routing block into their policy saw a
-// silently-ignored config. Removed rather than kept as scaffolding so
-// the schema stops lying about capabilities the runtime doesn't
-// enforce; the honest re-introduction is to add the field back the
-// same commit that wires the router.
+// Prior versions carried a Routing RoutingPolicy field with Rules of
+// {if, model} shape, and a Budgets []TenantBudget field with
+// MonthlyLimitUSD plus AlertAtPercent, both documented in
+// examples/policy.yaml and advertised in the README as if enforced —
+// but no code in the tree ever consumed them. An operator who wrote
+// either block into their policy saw a silently-ignored config. Each
+// was removed rather than kept as scaffolding (the SECURITY.md Cost
+// abuse row previously marked Budgets "Implemented (types), TODO
+// (enforcement)" — the "(types)" part was the scaffolding this
+// deletion retires) so the schema stops promising controls the
+// runtime doesn't enforce. The honest re-introduction for each is to
+// add it back the same commit that wires the matching enforcer
+// (router, cost tracker + alert emitter + billing persistence).
 type InferencePolicySpec struct {
-	// Budgets defines per-tenant spending limits.
-	Budgets []TenantBudget `yaml:"budgets,omitempty" json:"budgets,omitempty"`
-
 	// Security defines prompt-level security controls.
 	Security SecurityPolicy `yaml:"security,omitempty" json:"security,omitempty"`
 
 	// RateLimits defines token-aware rate limiting.
 	RateLimits []RateLimit `yaml:"rateLimits,omitempty" json:"rateLimits,omitempty"`
-}
-
-type TenantBudget struct {
-	Tenant          string  `yaml:"tenant" json:"tenant"`
-	MonthlyLimitUSD float64 `yaml:"monthly_limit_usd" json:"monthly_limit_usd"`
-	AlertAtPercent  int     `yaml:"alert_at_percent,omitempty" json:"alert_at_percent,omitempty"`
 }
 
 type SecurityPolicy struct {
@@ -62,11 +58,6 @@ type RateLimit struct {
 
 // Validate checks the policy spec for correctness.
 func (s *InferencePolicySpec) Validate() error {
-	for _, b := range s.Budgets {
-		if err := b.Validate(); err != nil {
-			return err
-		}
-	}
 	for _, r := range s.RateLimits {
 		if err := r.Validate(); err != nil {
 			return err
@@ -74,19 +65,6 @@ func (s *InferencePolicySpec) Validate() error {
 	}
 	if s.Security.MaxPromptTokens < 0 {
 		return fmt.Errorf("max_prompt_tokens must be non-negative")
-	}
-	return nil
-}
-
-func (b *TenantBudget) Validate() error {
-	if b.Tenant == "" {
-		return fmt.Errorf("tenant name is required in budget")
-	}
-	if b.MonthlyLimitUSD <= 0 {
-		return fmt.Errorf("monthly_limit_usd must be positive for tenant %q", b.Tenant)
-	}
-	if b.AlertAtPercent < 0 || b.AlertAtPercent > 100 {
-		return fmt.Errorf("alert_at_percent must be 0-100 for tenant %q", b.Tenant)
 	}
 	return nil
 }
