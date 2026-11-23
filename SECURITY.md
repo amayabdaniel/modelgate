@@ -24,7 +24,7 @@ You will receive a response within 72 hours.
 
 ## Security Design Principles
 
-1. **Defense in depth** — multiple layers of checks (proxy, policy, output scanning)
+1. **Defense in depth** — multiple layers of checks (proxy, policy). Output scanning is scaffolded in `pkg/security/output.go` (`ScanOutput` / `SanitizeOutput` / `MaskSecrets` / `RedactOutput` / `ContainsSecrets` / `IsOutputClean`, unit-tested in `output_test.go`) but no response-path middleware in `pkg/proxy/` wires any of those symbols today — see the Data exfiltration row below and the OWASP LLM02 row. <!-- output-scanning-wiring: scaffolded-only -->
 2. **Deny by default** — blocked patterns, PII detection, and injection checks are opt-in but recommended as default-on
 3. **Least privilege** — pods run as non-root, drop all capabilities, read-only filesystem where possible
 4. **Audit everything** — every request that reaches this middleware emits an audit event. The event's `action` field distinguishes `"allowed"` (all configured checks ran and none fired), `"blocked"` (a check fired and the request never reached upstream), and `"passthrough"` (the middleware could not inspect the request — a non-POST verb, an unparseable body, or a body that didn't match the OpenAI chat schema — but the request DID reach upstream). The compliance floor is "no request ever reaches the upstream without an audit event, and if the audit event doesn't say `blocked` then the request reached the model." <!-- audit-action-values: allowed blocked passthrough -->
@@ -51,7 +51,7 @@ You will receive a response within 72 hours.
 | Prompt injection | User input manipulates model behavior | Regex pattern matching + blocked patterns | Implemented (text-content chats only — see multimodal row) |
 | Prompt injection (encoded) | Unicode/encoding tricks bypass regex | Normalize input before checking | TODO |
 | Multimodal content bypass | OpenAI chat `content` sent as an array of parts (text/image/audio) doesn't match our string-typed decoder, so it reaches upstream without regex/PII/Guardrails inspection | The middleware emits an audit event with `action: "passthrough"` and `reason: "body does not match chat schema"` so the request is visible on `/v1/audit/stream`; it is **audited but not inspected** — real inspection (json.RawMessage-based extraction of text parts, and a policy decision on what to do with image/audio parts) is scoped follow-up | Audited, not inspected |
-| Data exfiltration via output | Model leaks PII, secrets, system prompt | Output scanning + PII redaction + secret masking | Implemented |
+| Data exfiltration via output | Model leaks PII, secrets, system prompt | Output scanning + PII redaction + secret masking (code in `pkg/security/output.go` is unit-tested but `pkg/proxy/` has zero response-path callers; the proxy forwards model output unmodified) | Scaffolded, not wired |
 | Model DoS | Large prompts or rapid requests exhaust GPU | Token-aware rate limiting per tenant | Implemented |
 | Cost abuse | Tenant generates excessive inference cost | Per-tenant budget enforcement (cost tracking + alert emission + billing persistence) — not yet wired. Token-aware rate limiting (see Model DoS row) bounds request volume per tenant but does not cap dollar spend. | TODO |
 | Tenant isolation breach | Shared GPU leaks data between tenants | Network policies + separate model instances per tenant | Partial |
@@ -63,7 +63,7 @@ You will receive a response within 72 hours.
 | # | Risk | Coverage |
 |---|---|---|
 | LLM01 | Prompt Injection | Implemented for text-content chats — 13 injection patterns + custom blocked patterns. Multimodal content-as-array reaches upstream audited-but-uninspected until the multimodal parser lands (see threat table above). |
-| LLM02 | Insecure Output Handling | Implemented — output scanning for PII, XSS, SQL injection, commands, secrets |
+| LLM02 | Insecure Output Handling | Scaffolded, not wired — `pkg/security/output.go` implements `ScanOutput` / `SanitizeOutput` / `MaskSecrets` / `RedactOutput` / `ContainsSecrets` / `IsOutputClean` with unit tests covering PII, XSS, SQL injection, command injection, and secret masking, but no response-path middleware in `pkg/proxy/` calls any of those symbols today. The proxy forwards model output to the client unmodified. Honest re-introduction is wiring a response-body middleware that runs the scanner on the upstream response before returning it, not adding more scanner surface. |
 | LLM03 | Training Data Poisoning | Out of scope (model training, not serving) |
 | LLM04 | Model Denial of Service | Implemented — token-aware rate limiting, max prompt token limits |
 | LLM05 | Supply Chain Vulnerabilities | TODO — dependency scanning, image signing, SBOM |
