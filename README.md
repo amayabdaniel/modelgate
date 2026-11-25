@@ -98,8 +98,8 @@ $ curl http://localhost:8080/v1/chat/completions \
 | Unicode normalization | Defeats zero-width char, encoding, whitespace bypass attacks |
 | Blocked patterns | Custom deny-list (regex-compatible) |
 | PII detection | Email, phone, SSN, credit card in prompts |
-| PII redaction in output | Strips PII from model responses |
-| Output scanning | Detects prompt leakage, XSS, SQL injection, dangerous commands |
+| PII redaction in output | Scaffolded in `pkg/security/output.go`, not wired on the response path — see SECURITY.md LLM02 |
+| Output scanning | Scaffolded in `pkg/security/output.go` (prompt leakage, XSS, SQL injection, dangerous commands), not wired on the response path — see SECURITY.md LLM02 |
 | Secret masking | Redacts API keys, GitHub tokens, AWS keys, OpenAI keys, bearer tokens |
 | Token rate limiting | Per-tenant token bucket with burst capacity |
 | Max prompt tokens | Reject oversized prompts |
@@ -113,8 +113,8 @@ $ curl http://localhost:8080/v1/chat/completions \
 
 | # | Risk | Status |
 |---|---|---|
-| LLM01 | Prompt Injection | Implemented |
-| LLM02 | Insecure Output Handling | Implemented |
+| LLM01 | Prompt Injection | Implemented for text-content chats — multimodal content-as-array audited-but-uninspected, see SECURITY.md |
+| LLM02 | Insecure Output Handling | Scaffolded, not wired — see SECURITY.md <!-- output-scanning-wiring: scaffolded-only --> |
 | LLM04 | Model Denial of Service | Implemented |
 | LLM06 | Sensitive Information Disclosure | Implemented |
 

@@ -30,11 +30,23 @@ var outputScannerSymbols = []string{
 
 // outputScanningWiringMarkerRe matches the single-line marker placed
 // in SECURITY.md next to the Defense-in-Depth list and the Data-
-// exfiltration row. Values: scaffolded-only | wired-in-proxy.
-// Whitespace tolerated around the colon.
+// exfiltration row, and mirrored in README.md's LLM02 cell.
+// Values: scaffolded-only | wired-in-proxy. Whitespace tolerated
+// around the colon.
 var outputScanningWiringMarkerRe = regexp.MustCompile(
 	`<!--\s*output-scanning-wiring:\s*(scaffolded-only|wired-in-proxy)\s*-->`,
 )
+
+// outputScanningWiringDocs are the repo-relative paths of every doc
+// file that advertises LLM02 Insecure Output Handling status to a
+// reader. Each one must carry the output-scanning-wiring marker, and
+// all markers must agree — see
+// TestREADMEOutputScanningMirrorsSECURITYMarker. Adding a doc that
+// repeats the LLM02 claim (another README, a design note, a runbook)
+// means adding it here AND adding the marker inside that doc the
+// same commit, otherwise the claim can drift silently again — the
+// exact shape of 8c379f3's sibling-sweep miss on README.md.
+var outputScanningWiringDocs = []string{"SECURITY.md", "README.md"}
 
 // TestOutputScanningSecurityDocsMatchWiring is the 2026-11-23 drift
 // guard for the SECURITY.md output-scanning correction. Prior to
@@ -161,6 +173,75 @@ func TestOutputScanningSecurityDocsMatchWiring(t *testing.T) {
 		} else {
 			t.Errorf("SECURITY.md marker says %q (wired) but pkg/proxy has zero response-path callers of any of %v. Either wire a response-body middleware that calls one of those symbols on the upstream response before returning it (making the marker true), or flip the marker to `<!-- output-scanning-wiring: scaffolded-only -->` AND change the Status / Coverage cells to \"Scaffolded, not wired\" so the doc describes what actually ships.",
 				marker, outputScannerSymbols)
+		}
+	}
+}
+
+// TestREADMEOutputScanningMirrorsSECURITYMarker is the follow-on
+// drift guard to TestOutputScanningSecurityDocsMatchWiring, closing
+// the sibling-sweep miss from 8c379f3. That commit corrected
+// SECURITY.md's LLM02 cell, Defense-in-Depth list, and Data-
+// exfiltration row to "Scaffolded, not wired" and added the marker
+// + the SECURITY.md-only drift guard — but did NOT touch README.md's
+// parallel feature rows (PII redaction in output, Output scanning)
+// or its OWASP LLM02 "Implemented" cell, which continued to describe
+// the proxy as if it scanned responses. Covered on this commit by
+// propagating the marker into README.md's LLM02 cell and asserting
+// both markers agree.
+//
+// Invariant: every file in outputScanningWiringDocs must carry the
+// marker, and every marker value must be equal. Transitively, since
+// TestOutputScanningSecurityDocsMatchWiring already asserts
+// SECURITY.md's marker matches the code wiring state, README's
+// marker matching SECURITY's marker means README matches the code
+// state too — one invariant, two tests, split so an operator reading
+// a failure knows whether the stale doc is the LLM02 cell in
+// SECURITY.md (code↔SECURITY) or the sibling in README.md
+// (SECURITY↔README).
+//
+// Floor-vs-shrinkage (from 2026-11-24 verification feedback on
+// aec10bc): a pairwise-agreement guard over N files reads green if N
+// shrinks to 1 — a single file agrees with itself. Checking
+// len(outputScanningWiringDocs) == 0 catches the empty terminal, but
+// not the co-shrink terminal. Pin the population size against a
+// stated minimum (>= 2) so deletion from the list fails as loudly as
+// emptiness. If a third doc is added, tighten the constant.
+func TestREADMEOutputScanningMirrorsSECURITYMarker(t *testing.T) {
+	const minDocs = 2
+	if len(outputScanningWiringDocs) < minDocs {
+		t.Fatalf("outputScanningWiringDocs has %d entries, need >= %d — the cross-doc agreement guard requires two populations to compare and a shrink to %d reads vacuously green; apply the floor-vs-shrinkage rule from aec10bc's verification", len(outputScanningWiringDocs), minDocs, len(outputScanningWiringDocs))
+	}
+
+	repoRoot := findRepoRoot(t)
+	values := make(map[string]string, len(outputScanningWiringDocs))
+	for _, rel := range outputScanningWiringDocs {
+		p := filepath.Join(repoRoot, rel)
+		data, rerr := os.ReadFile(p)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", p, rerr)
+		}
+		matches := outputScanningWiringMarkerRe.FindAllStringSubmatch(string(data), -1)
+		if len(matches) == 0 {
+			t.Fatalf("%s is listed in outputScanningWiringDocs but carries no output-scanning-wiring marker. Add exactly one instance of\n  <!-- output-scanning-wiring: scaffolded-only -->\nor\n  <!-- output-scanning-wiring: wired-in-proxy -->\ninside the LLM02 cell (README) or next to the Data exfiltration row (SECURITY.md), matching the other doc's current value.", rel)
+		}
+		for _, m := range matches[1:] {
+			if m[1] != matches[0][1] {
+				t.Fatalf("%s carries contradicting output-scanning-wiring markers: %q and %q. Keep exactly one; this file is now disagreeing with itself.", rel, matches[0][1], m[1])
+			}
+		}
+		values[rel] = matches[0][1]
+	}
+
+	// Compare every doc to a canonical reference so the error message
+	// names both sides of the disagreement.
+	var refRel, refVal string
+	for rel, v := range values {
+		refRel, refVal = rel, v
+		break
+	}
+	for rel, v := range values {
+		if v != refVal {
+			t.Errorf("output-scanning-wiring markers disagree across docs: %s=%q vs %s=%q — one is stale. Propagate the current wiring state across every doc in outputScanningWiringDocs so the LLM02 story matches between SECURITY.md and README.md (and whatever future doc joins the list).", refRel, refVal, rel, v)
 		}
 	}
 }
